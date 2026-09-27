@@ -1402,7 +1402,10 @@ impl Tty {
         // Filter out the CCS modifiers as they have increased bandwidth, causing some monitor
         // configurations to stop working.
         //
-        // For display only devices, restrict to linear buffers for best compatibility.
+        // For display only devices, restrict to linear buffers for best compatibility. Same when
+        // another GPU renders this device's outputs: its Vulkan driver then copies each finished
+        // frame straight into the linear swapchain buffers (as with PRIME), and this device only
+        // scans them out instead of compositing every frame a second time.
         //
         // The invalid modifier attempt below should make this unnecessary in some cases, but it
         // would still be a bad idea to remove this until Smithay has some kind of full-device
@@ -1412,7 +1415,7 @@ impl Tty {
             .iter()
             .copied()
             .filter(|format| {
-                if device.render_node.is_none() {
+                if device.render_node != Some(self.primary_render_node) {
                     return format.modifier == Modifier::Linear;
                 }
 
