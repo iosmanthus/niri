@@ -234,6 +234,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // Children get DISPLAY from CHILD_DISPLAY, and the session environment has it by now. Keep it
+    // out of our own environment: it points at our own X11 socket, which only the main thread
+    // serves, so a library that probes X from the main thread waits forever. The NVIDIA Vulkan
+    // driver does, when smithay opens it to copy frames between GPUs.
+    env::remove_var("DISPLAY");
+
     #[cfg(feature = "dbus")]
     dbus::DBusServers::start(&mut state, cli.session);
 
