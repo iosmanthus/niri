@@ -508,7 +508,9 @@ where
                     return;
                 }
 
-                state.apply_output_config(new_config.into_values().collect());
+                let new_config =
+                    merge_output_config(&g_state.current_config, new_config.into_values());
+                state.apply_output_config(new_config);
                 // FIXME: verify that it had been applied successfully (which may be difficult).
                 conf.succeeded();
             }
@@ -550,6 +552,26 @@ where
             _ => unreachable!(),
         }
     }
+}
+
+/// Applies the config of the heads in a configuration to the current config.
+///
+/// A configuration covers the connected heads only. The config of the other outputs is kept
+/// for when they are connected again, rather than dropped: otherwise, when a client like kanshi
+/// reacts to an output being unplugged, the output comes back with none of its config.
+fn merge_output_config(
+    current: &niri_config::Outputs,
+    applied: impl IntoIterator<Item = niri_config::Output>,
+) -> niri_config::Outputs {
+    let mut outputs = current.clone();
+    for output in applied {
+        // Each applied output was built from the entry for it in the current config, if any.
+        match outputs.0.iter_mut().find(|o| o.name == output.name) {
+            Some(existing) => *existing = output,
+            None => outputs.0.push(output),
+        }
+    }
+    outputs
 }
 
 impl<D> Dispatch2<ZwlrOutputConfigurationHeadV1, D> for OutputConfigurationHeadState
@@ -859,4 +881,54 @@ fn send_new_head<D>(
     }
     // new_head.serial_number(output.serial);
     client_data.heads.insert(output, (new_head, new_modes));
+}
+
+#[cfg(test)]
+mod tests {
+    use niri_config::{Output, Outputs, Position};
+
+    use super::*;
+
+    fn output(name: &str, scale: f64, x: i32) -> Output {
+        Output {
+            name: name.to_string(),
+            scale: Some(FloatOrInt(scale)),
+            position: Some(Position { x, y: 0 }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn merge_keeps_config_of_unconfigured_outputs() {
+        let current = Outputs(vec![
+            output("PNP(AOC) U2790B 0x0000B9B4", 2., 0),
+            output("DP-2", 2., 1920),
+            output("eDP-1", 2., 0),
+        ]);
+
+        // The first output is unplugged; kanshi turns the laptop panel on.
+        let mut edp = current.0[2].clone();
+        edp.off = false;
+        edp.scale = Some(FloatOrInt(1.5));
+        let merged = merge_output_config(&current, [current.0[1].clone(), edp.clone()]);
+
+        assert_eq!(
+            merged.0,
+            vec![current.0[0].clone(), current.0[1].clone(), edp]
+        );
+    }
+
+    #[test]
+    fn merge_adds_outputs_without_config() {
+        let current = Outputs(vec![output("DP-2", 2., 0)]);
+        let new = Output {
+            name: "LG Electronics LG HDR 4K 0x00053A2C".to_string(),
+            off: true,
+            ..Default::default()
+        };
+
+        let merged = merge_output_config(&current, [new.clone()]);
+
+        assert_eq!(merged.0, vec![current.0[0].clone(), new]);
+    }
 }
