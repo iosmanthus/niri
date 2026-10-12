@@ -75,7 +75,7 @@ use smithay::utils::{
 };
 use smithay::wayland::background_effect::BackgroundEffectState;
 use smithay::wayland::compositor::{
-    with_states, with_surface_tree_downward, CompositorClientState, CompositorHandler,
+    get_parent, with_states, with_surface_tree_downward, CompositorClientState, CompositorHandler,
     CompositorState, HookId, SurfaceData, TraversalAction,
 };
 use smithay::wayland::cursor_shape::CursorShapeManagerState;
@@ -92,7 +92,9 @@ use smithay::wayland::keyboard_shortcuts_inhibit::{
     KeyboardShortcutsInhibitState, KeyboardShortcutsInhibitor,
 };
 use smithay::wayland::output::OutputManagerState;
-use smithay::wayland::pointer_constraints::{with_pointer_constraint, PointerConstraintsState};
+use smithay::wayland::pointer_constraints::{
+    with_pointer_constraint, PointerConstraint, PointerConstraintsState,
+};
 use smithay::wayland::pointer_gestures::PointerGesturesState;
 use smithay::wayland::presentation::PresentationState;
 use smithay::wayland::relative_pointer::RelativePointerManagerState;
@@ -1192,6 +1194,14 @@ impl State {
         // We're not changing the global cursor location here, so if the contents did not change,
         // then nothing changed.
         if self.niri.pointer_contents == under {
+            return false;
+        }
+
+        // A layer surface showing up under a locked pointer, such as a notification popup, must
+        // not take the pointer away from the surface that locked it while that surface still has
+        // keyboard focus. Moving pointer focus deactivates the lock, and a one-shot lock (which is
+        // what Chromium uses for the Pointer Lock API) is then gone for good.
+        if under.layer.is_some() && self.niri.is_pointer_locked_to_keyboard_focus() {
             return false;
         }
 
@@ -6673,6 +6683,33 @@ impl Niri {
         };
 
         output_state.lock_surface = Some(surface);
+    }
+
+    /// Returns whether the pointer focus surface has an active pointer lock and its toplevel has
+    /// keyboard focus.
+    pub fn is_pointer_locked_to_keyboard_focus(&self) -> bool {
+        let Some((surface, _)) = &self.pointer_contents.surface else {
+            return false;
+        };
+
+        let pointer = self.seat.get_pointer().unwrap();
+        if Some(surface) != pointer.current_focus().as_ref() {
+            return false;
+        }
+
+        let is_locked = with_pointer_constraint(surface, &pointer, |constraint| {
+            constraint.is_some_and(|c| c.is_active() && matches!(&*c, PointerConstraint::Locked(_)))
+        });
+        if !is_locked {
+            return false;
+        }
+
+        let mut root = surface.clone();
+        while let Some(parent) = get_parent(&root) {
+            root = parent;
+        }
+
+        self.keyboard_focus.surface() == Some(&root)
     }
 
     /// Activates the pointer constraint if necessary according to the current pointer contents.
