@@ -12,6 +12,8 @@ use calloop_wayland_source::WaylandSource;
 use single_pixel_buffer::v1::client::wp_single_pixel_buffer_manager_v1::WpSinglePixelBufferManagerV1;
 use smithay::reexports::wayland_protocols::wp::keyboard_shortcuts_inhibit::zv1::client::zwp_keyboard_shortcuts_inhibit_manager_v1::ZwpKeyboardShortcutsInhibitManagerV1;
 use smithay::reexports::wayland_protocols::wp::keyboard_shortcuts_inhibit::zv1::client::zwp_keyboard_shortcuts_inhibitor_v1::{self, ZwpKeyboardShortcutsInhibitorV1};
+use smithay::reexports::wayland_protocols::wp::pointer_constraints::zv1::client::zwp_locked_pointer_v1::{self, ZwpLockedPointerV1};
+use smithay::reexports::wayland_protocols::wp::pointer_constraints::zv1::client::zwp_pointer_constraints_v1::{self, ZwpPointerConstraintsV1};
 use smithay::reexports::wayland_protocols::wp::single_pixel_buffer;
 use smithay::reexports::wayland_protocols::wp::viewporter::client::wp_viewport::WpViewport;
 use smithay::reexports::wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
@@ -34,6 +36,7 @@ use wayland_client::protocol::wl_compositor::WlCompositor;
 use wayland_client::protocol::wl_display::WlDisplay;
 use wayland_client::protocol::wl_keyboard::{self, WlKeyboard};
 use wayland_client::protocol::wl_output::{self, WlOutput};
+use wayland_client::protocol::wl_pointer::WlPointer;
 use wayland_client::protocol::wl_registry::{self, WlRegistry};
 use wayland_client::protocol::wl_seat::{self, WlSeat};
 use wayland_client::protocol::wl_surface::{self, WlSurface};
@@ -65,6 +68,7 @@ pub struct State {
     pub spbm: Option<WpSinglePixelBufferManagerV1>,
     pub viewporter: Option<WpViewporter>,
     pub ksim: Option<ZwpKeyboardShortcutsInhibitManagerV1>,
+    pub pointer_constraints: Option<ZwpPointerConstraintsV1>,
 
     pub windows: Vec<Window>,
     pub layers: Vec<LayerSurface>,
@@ -169,6 +173,12 @@ pub struct SyncData {
     pub done: AtomicBool,
 }
 
+#[derive(Default)]
+pub struct LockedPointerData {
+    pub locked: AtomicBool,
+    pub unlocked: AtomicBool,
+}
+
 static CLIENT_ID_COUNTER: IdCounter = IdCounter::new();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -265,6 +275,7 @@ impl Client {
             spbm: None,
             viewporter: None,
             ksim: None,
+            pointer_constraints: None,
             windows: Vec::new(),
             layers: Vec::new(),
         };
@@ -429,6 +440,23 @@ impl State {
         let ksim = self.ksim.as_ref().unwrap();
         let seat = self.seats.keys().next().unwrap();
         ksim.inhibit_shortcuts(surface, seat, &self.qh, ())
+    }
+
+    /// Locks a new pointer of the first seat to the surface, with a one-shot lifetime.
+    pub fn lock_pointer(&self, surface: &WlSurface) -> Arc<LockedPointerData> {
+        let constraints = self.pointer_constraints.as_ref().unwrap();
+        let seat = self.seats.keys().next().unwrap();
+        let pointer = seat.get_pointer(&self.qh, ());
+        let data = Arc::new(LockedPointerData::default());
+        constraints.lock_pointer(
+            surface,
+            &pointer,
+            None,
+            zwp_pointer_constraints_v1::Lifetime::Oneshot,
+            &self.qh,
+            data.clone(),
+        );
+        data
     }
 }
 
@@ -655,6 +683,9 @@ impl Dispatch<WlRegistry, ()> for State {
                         ZwpKeyboardShortcutsInhibitManagerV1::interface().version,
                     );
                     state.ksim = Some(registry.bind(name, version, qh, ()));
+                } else if interface == ZwpPointerConstraintsV1::interface().name {
+                    let version = min(version, ZwpPointerConstraintsV1::interface().version);
+                    state.pointer_constraints = Some(registry.bind(name, version, qh, ()));
                 }
 
                 let global = Global {
@@ -840,6 +871,25 @@ impl Dispatch<ZwlrLayerShellV1, ()> for State {
 
 wayland_client::delegate_noop!(State: ZwlrVirtualPointerManagerV1);
 wayland_client::delegate_noop!(State: ZwlrVirtualPointerV1);
+wayland_client::delegate_noop!(State: ignore WlPointer);
+wayland_client::delegate_noop!(State: ZwpPointerConstraintsV1);
+
+impl Dispatch<ZwpLockedPointerV1, Arc<LockedPointerData>> for State {
+    fn event(
+        _state: &mut Self,
+        _proxy: &ZwpLockedPointerV1,
+        event: <ZwpLockedPointerV1 as wayland_client::Proxy>::Event,
+        data: &Arc<LockedPointerData>,
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwp_locked_pointer_v1::Event::Locked => data.locked.store(true, Ordering::Relaxed),
+            zwp_locked_pointer_v1::Event::Unlocked => data.unlocked.store(true, Ordering::Relaxed),
+            _ => unreachable!(),
+        }
+    }
+}
 
 impl Dispatch<WlSurface, ()> for State {
     fn event(
