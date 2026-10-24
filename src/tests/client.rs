@@ -13,6 +13,10 @@ use single_pixel_buffer::v1::client::wp_single_pixel_buffer_manager_v1::WpSingle
 use smithay::reexports::wayland_protocols::wp::keyboard_shortcuts_inhibit::zv1::client::zwp_keyboard_shortcuts_inhibit_manager_v1::ZwpKeyboardShortcutsInhibitManagerV1;
 use smithay::reexports::wayland_protocols::wp::keyboard_shortcuts_inhibit::zv1::client::zwp_keyboard_shortcuts_inhibitor_v1::{self, ZwpKeyboardShortcutsInhibitorV1};
 use smithay::reexports::wayland_protocols::wp::single_pixel_buffer;
+use smithay::reexports::wayland_protocols::ext::session_lock::v1::client::{
+    ext_session_lock_manager_v1::ExtSessionLockManagerV1,
+    ext_session_lock_v1::{self, ExtSessionLockV1},
+};
 use smithay::reexports::wayland_protocols::wp::viewporter::client::wp_viewport::WpViewport;
 use smithay::reexports::wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
 use smithay::reexports::wayland_protocols::xdg::shell::client::xdg_surface::{self, XdgSurface};
@@ -65,9 +69,17 @@ pub struct State {
     pub spbm: Option<WpSinglePixelBufferManagerV1>,
     pub viewporter: Option<WpViewporter>,
     pub ksim: Option<ZwpKeyboardShortcutsInhibitManagerV1>,
+    pub lock_manager: Option<ExtSessionLockManagerV1>,
+    pub lock_events: Vec<(ExtSessionLockV1, LockEvent)>,
 
     pub windows: Vec<Window>,
     pub layers: Vec<LayerSurface>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LockEvent {
+    Locked,
+    Finished,
 }
 
 pub struct Window {
@@ -265,6 +277,8 @@ impl Client {
             spbm: None,
             viewporter: None,
             ksim: None,
+            lock_manager: None,
+            lock_events: Vec::new(),
             windows: Vec::new(),
             layers: Vec::new(),
         };
@@ -640,6 +654,8 @@ impl Dispatch<WlRegistry, ()> for State {
                 } else if interface == WpViewporter::interface().name {
                     let version = min(version, WpViewporter::interface().version);
                     state.viewporter = Some(registry.bind(name, version, qh, ()));
+                } else if interface == ExtSessionLockManagerV1::interface().name {
+                    state.lock_manager = Some(registry.bind(name, 1, qh, ()));
                 } else if interface == WlOutput::interface().name {
                     let version = min(version, WlOutput::interface().version);
                     let output = registry.bind(name, version, qh, ());
@@ -1040,5 +1056,36 @@ impl Dispatch<ZwpKeyboardShortcutsInhibitorV1, ()> for State {
             zwp_keyboard_shortcuts_inhibitor_v1::Event::Inactive => (),
             _ => unreachable!(),
         }
+    }
+}
+
+impl Dispatch<ExtSessionLockManagerV1, ()> for State {
+    fn event(
+        _: &mut Self,
+        _: &ExtSessionLockManagerV1,
+        _: <ExtSessionLockManagerV1 as wayland_client::Proxy>::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        unreachable!()
+    }
+}
+
+impl Dispatch<ExtSessionLockV1, ()> for State {
+    fn event(
+        state: &mut Self,
+        lock: &ExtSessionLockV1,
+        event: ext_session_lock_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        let event = match event {
+            ext_session_lock_v1::Event::Locked => LockEvent::Locked,
+            ext_session_lock_v1::Event::Finished => LockEvent::Finished,
+            _ => unreachable!(),
+        };
+        state.lock_events.push((lock.clone(), event));
     }
 }

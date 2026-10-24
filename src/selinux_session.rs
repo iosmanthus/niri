@@ -12,6 +12,7 @@ use niri_config::misc::{Environment, EnvironmentVariable};
 pub struct Session {
     pub libinput_plugins: Vec<PathBuf>,
     pub wayland_display: String,
+    pub(crate) context: crate::selinux::SecurityContext,
     bridge: PathBuf,
 }
 
@@ -19,15 +20,6 @@ static SESSION: OnceLock<Session> = OnceLock::new();
 
 pub fn get() -> Option<&'static Session> {
     SESSION.get()
-}
-
-fn compositor_context(context: &str) -> bool {
-    let fields: Vec<_> = context.trim_matches(['\0', '\n']).splitn(4, ':').collect();
-    fields.len() == 4
-        && !fields[0].is_empty()
-        && !fields[1].is_empty()
-        && fields[2] == "niri_t"
-        && !fields[3].is_empty()
 }
 
 fn store_path(path: &Path) -> anyhow::Result<PathBuf> {
@@ -46,11 +38,7 @@ fn listener_name(name: &str) -> bool {
 }
 
 pub fn initialize(plugins: &[PathBuf], bridge: &Path, wayland_display: &str) -> anyhow::Result<()> {
-    let context = std::fs::read_to_string("/proc/self/attr/current")
-        .context("cannot query the protected compositor context")?;
-    if !compositor_context(&context) {
-        bail!("--selinux-session requires the niri_t process context");
-    }
+    let context = crate::selinux::compositor_context()?;
     if !listener_name(wayland_display) {
         bail!("protected-session listener must be a fixed wayland-N name");
     }
@@ -74,6 +62,7 @@ pub fn initialize(plugins: &[PathBuf], bridge: &Path, wayland_display: &str) -> 
         .set(Session {
             libinput_plugins,
             wayland_display: wayland_display.into(),
+            context,
             bridge: store_path(bridge)?,
         })
         .map_err(|_| anyhow::anyhow!("session already initialized"))
@@ -161,22 +150,6 @@ mod tests {
             "wayland-1/other",
         ] {
             assert!(!listener_name(name));
-        }
-    }
-
-    #[test]
-    fn p11_only_the_kernel_compositor_type_is_accepted() {
-        assert!(compositor_context(
-            "unconfined_u:unconfined_r:niri_t:s0-s0:c0.c1023\0"
-        ));
-        for context in [
-            "unconfined",
-            "",
-            "u:r:unconfined_t:s0",
-            "u:r:niri_t_extra:s0",
-            "u:r:niri_t:",
-        ] {
-            assert!(!compositor_context(context));
         }
     }
 

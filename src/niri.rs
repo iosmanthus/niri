@@ -175,7 +175,7 @@ use crate::render_helpers::{
 };
 #[cfg(feature = "xdp-gnome-screencast")]
 use crate::screencasting::Screencasting;
-use crate::selinux::{self, ClientOrigin, PeerLabel};
+use crate::selinux::{self, ClientOrigin, PeerLabel, SecurityContext, UnknownReason};
 use crate::ui::config_error_notification::ConfigErrorNotification;
 use crate::ui::exit_confirm_dialog::{ExitConfirmDialog, ExitConfirmDialogRenderElement};
 use crate::ui::hotkey_overlay::HotkeyOverlay;
@@ -403,6 +403,8 @@ pub struct Niri {
     pub mods_with_finger_scroll_binds: HashSet<Modifiers>,
 
     pub lock_state: LockState,
+    // Set only from the authenticated startup state, never configuration or IPC.
+    lock_context: Option<SecurityContext>,
 
     // State that we last sent to the logind LockedHint.
     pub locked_hint: Option<bool>,
@@ -2755,6 +2757,7 @@ impl Niri {
             mods_with_finger_scroll_binds,
 
             lock_state: LockState::Unlocked,
+            lock_context: crate::selinux_session::get().map(|session| session.context.clone()),
             locked_hint: None,
 
             screenshot_ui,
@@ -2798,14 +2801,18 @@ impl Niri {
     }
 
     pub fn insert_client(&mut self, client: NewClient) {
+        let peer_label = selinux::peer_label(client.client.as_raw_fd(), client.origin);
+        self.insert_client_with_peer(client, peer_label);
+    }
+
+    fn insert_client_with_peer(&mut self, client: NewClient, peer_label: PeerLabel) {
         let NewClient {
             client,
             restricted,
             credentials_unknown,
-            origin,
+            origin: _,
         } = client;
 
-        let peer_label = selinux::peer_label(client.as_raw_fd(), origin);
         let config = self.config.borrow();
         let data = Arc::new(ClientState {
             compositor_state: Default::default(),
@@ -2819,6 +2826,16 @@ impl Niri {
         if let Err(err) = self.display_handle.insert_client(client, data) {
             warn!("error inserting client: {err}");
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn protect_locks_for_test(&mut self) {
+        self.lock_context = Some(SecurityContext::for_test("system_u:system_r:niri_t:s0"));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn insert_test_client(&mut self, client: NewClient, peer: PeerLabel) {
+        self.insert_client_with_peer(client, peer);
     }
 
     #[cfg(feature = "dbus")]
@@ -6449,6 +6466,25 @@ impl Niri {
     }
 
     pub fn lock(&mut self, confirmation: SessionLocker) {
+        // P13: authorize before even considering first-lock or replacement state.
+        if let Some(server) = &self.lock_context {
+            let client = confirmation.ext_session_lock().client();
+            let data = client
+                .as_ref()
+                .and_then(|client| client.get_data::<ClientState>());
+            let unknown = PeerLabel::Unknown(UnknownReason::NotDirect);
+            let (restricted, peer) = data
+                .map(|data| (data.restricted, &data.peer_label))
+                .unwrap_or((false, &unknown));
+            if let Some(reason) = selinux::lock_denial(restricted, peer) {
+                let connection = client
+                    .as_ref()
+                    .map(|client| format!("{:?}", client.id()))
+                    .unwrap_or_else(|| "unavailable".into());
+                selinux::audit_lock_denial(peer, server, connection, reason);
+                return;
+            }
+        }
         // Check if another client is in the process of locking.
         if matches!(
             self.lock_state,
