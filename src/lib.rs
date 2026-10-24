@@ -21,6 +21,7 @@ pub mod render_helpers;
 pub mod rubber_band;
 #[cfg(feature = "xdp-gnome-screencast")]
 pub mod screencasting;
+pub mod selinux;
 pub mod selinux_session;
 pub mod ui;
 pub mod utils;
