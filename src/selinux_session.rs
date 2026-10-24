@@ -1,7 +1,9 @@
 //! P11: process-local protected-session state, fixed at startup.
 
 use std::env;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::process::{ChildStdin, Command, Stdio};
 use std::sync::OnceLock;
 
 use anyhow::{bail, Context};
@@ -9,6 +11,7 @@ use niri_config::misc::{Environment, EnvironmentVariable};
 
 pub struct Session {
     pub libinput_plugins: Vec<PathBuf>,
+    bridge: PathBuf,
 }
 
 static SESSION: OnceLock<Session> = OnceLock::new();
@@ -36,7 +39,7 @@ fn store_path(path: &Path) -> anyhow::Result<PathBuf> {
     Ok(path)
 }
 
-pub fn initialize(plugins: &[PathBuf]) -> anyhow::Result<()> {
+pub fn initialize(plugins: &[PathBuf], bridge: &Path) -> anyhow::Result<()> {
     let context = std::fs::read_to_string("/proc/self/attr/current")
         .context("cannot query the protected compositor context")?;
     if !compositor_context(&context) {
@@ -58,8 +61,30 @@ pub fn initialize(plugins: &[PathBuf]) -> anyhow::Result<()> {
         .map(|path| store_path(path))
         .collect::<anyhow::Result<_>>()?;
     SESSION
-        .set(Session { libinput_plugins })
+        .set(Session {
+            libinput_plugins,
+            bridge: store_path(bridge)?,
+        })
         .map_err(|_| anyhow::anyhow!("session already initialized"))
+}
+
+/// The pipe is kept until compositor exit. Its close-on-exec writer cannot
+/// leak to applications; EOF also reaches the bridge after a fatal signal.
+pub fn start_bridge() -> anyhow::Result<Option<ChildStdin>> {
+    let Some(session) = get() else {
+        return Ok(None);
+    };
+    let mut child = Command::new(&session.bridge)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .context("cannot start the desktop session bridge")?;
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().unwrap()).read_line(&mut line)?;
+    if line != "ready\n" {
+        bail!("desktop session bridge failed before readiness");
+    }
+    Ok(child.stdin.take())
 }
 
 pub fn restore_child_directories(environment: &mut Environment) {
