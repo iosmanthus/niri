@@ -2589,7 +2589,12 @@ impl Niri {
             .unwrap();
 
         let socket_name = create_wayland_socket.then(|| {
-            let socket_source = ListeningSocketSource::new_auto().unwrap();
+            let socket_source = if let Some(session) = crate::selinux_session::get() {
+                ListeningSocketSource::with_name(&session.wayland_display)
+                    .expect("cannot bind the fixed protected-session Wayland listener")
+            } else {
+                ListeningSocketSource::new_auto().unwrap()
+            };
             let socket_name = socket_source.socket_name().to_os_string();
             event_loop
                 .insert_source(socket_source, move |client, _, state| {
