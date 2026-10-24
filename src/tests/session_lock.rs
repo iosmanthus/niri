@@ -117,3 +117,29 @@ fn p13_ordinary_compositor_retains_the_protocol_control() {
         assert_eq!(request(&mut fixture, id), LockEvent::Locked);
     }
 }
+
+#[test]
+fn p15_snapshot_reports_a_dead_owner_without_changing_the_lock() {
+    use niri_ipc::SessionLockPhase;
+    let mut fixture = Fixture::new();
+    fixture.niri().protect_locks_for_test();
+    let observer = fixture.add_client();
+    let trusted = fixture.add_client_with_peer(Some(known("locker_t")));
+    assert_eq!(
+        fixture.niri().session_lock_status().phase,
+        SessionLockPhase::Unlocked
+    );
+    assert_eq!(request(&mut fixture, trusted), LockEvent::Locked);
+    let before = owner(&mut fixture);
+    let snapshot = fixture.niri().session_lock_status();
+    assert_eq!(snapshot.phase, SessionLockPhase::Locked);
+    assert!(snapshot.client_alive && snapshot.outputs.is_empty());
+    assert_eq!(owner(&mut fixture), before);
+    fixture.remove_client(trusted);
+    fixture.double_roundtrip(observer);
+    let dead = owner(&mut fixture);
+    let snapshot = fixture.niri().session_lock_status();
+    assert_eq!(snapshot.phase, SessionLockPhase::Locked);
+    assert!(!snapshot.client_alive);
+    assert_eq!(owner(&mut fixture), dead);
+}

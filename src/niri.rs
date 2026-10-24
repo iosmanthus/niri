@@ -6556,6 +6556,37 @@ impl Niri {
         }
     }
 
+    pub fn session_lock_status(&self) -> niri_ipc::SessionLockStatus {
+        use niri_ipc::SessionLockPhase;
+        let (phase, client_alive) = match &self.lock_state {
+            LockState::Unlocked => (SessionLockPhase::Unlocked, false),
+            LockState::WaitingForSurfaces { confirmation, .. } => (
+                SessionLockPhase::WaitingForSurfaces,
+                confirmation.ext_session_lock().is_alive(),
+            ),
+            LockState::Locking(confirmation) => (
+                SessionLockPhase::Locking,
+                confirmation.ext_session_lock().is_alive(),
+            ),
+            LockState::Locked(lock) => (SessionLockPhase::Locked, lock.is_alive()),
+        };
+        let outputs = self
+            .output_state
+            .iter()
+            .map(|(output, state)| {
+                (
+                    output.name(),
+                    state.lock_render_state == LockRenderState::Locked,
+                )
+            })
+            .collect();
+        niri_ipc::SessionLockStatus {
+            phase,
+            client_alive,
+            outputs,
+        }
+    }
+
     pub fn maybe_continue_to_locking(&mut self) {
         if !matches!(self.lock_state, LockState::WaitingForSurfaces { .. }) {
             // Not waiting.
