@@ -79,6 +79,10 @@ fn p13_first_and_dead_lock_admission_preserve_state_and_emit_user_avc() {
         assert_eq!(request(&mut fixture, replacement), LockEvent::Locked);
         let replaced = owner(&mut fixture);
         assert!(replaced.1 && replaced.0 != dead.0);
+        fixture.remove_client(ordinary);
+        fixture.double_roundtrip(unknown);
+        let next = fixture.add_client_with_peer(Some(known("unconfined_t")));
+        assert_eq!(request(&mut fixture, next), LockEvent::Finished);
     });
     let output = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
     let events: Vec<serde_json::Value> = output
@@ -88,7 +92,10 @@ fn p13_first_and_dead_lock_admission_preserve_state_and_emit_user_avc() {
                 .map(|(_, event)| serde_json::from_str(event).unwrap())
         })
         .collect();
-    assert_eq!(events.len(), 5, "{output}");
+    assert_eq!(events.len(), 6, "{output}");
+    assert_eq!(events[0]["connection"], events[2]["connection"]);
+    assert_eq!(events[0]["connection"], events[3]["connection"]);
+    assert_ne!(events[0]["connection"], events[5]["connection"]);
     for event in &events {
         assert_eq!(event["manager"], "niri");
         assert_eq!(event["op"], "session-lock");

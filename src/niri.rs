@@ -405,6 +405,7 @@ pub struct Niri {
     pub lock_state: LockState,
     // Set only from the authenticated startup state, never configuration or IPC.
     lock_context: Option<SecurityContext>,
+    next_connection_id: u64,
 
     // State that we last sent to the logind LockedHint.
     pub locked_hint: Option<bool>,
@@ -2758,6 +2759,7 @@ impl Niri {
 
             lock_state: LockState::Unlocked,
             lock_context: crate::selinux_session::get().map(|session| session.context.clone()),
+            next_connection_id: 0,
             locked_hint: None,
 
             screenshot_ui,
@@ -2806,6 +2808,10 @@ impl Niri {
     }
 
     fn insert_client_with_peer(&mut self, client: NewClient, peer_label: PeerLabel) {
+        self.next_connection_id = self
+            .next_connection_id
+            .checked_add(1)
+            .expect("connection IDs exhausted");
         let NewClient {
             client,
             restricted,
@@ -2821,6 +2827,7 @@ impl Niri {
             restricted,
             credentials_unknown,
             peer_label,
+            connection_id: self.next_connection_id,
         });
 
         if let Err(err) = self.display_handle.insert_client(client, data) {
@@ -6477,9 +6484,8 @@ impl Niri {
                 .map(|data| (data.restricted, &data.peer_label))
                 .unwrap_or((false, &unknown));
             if let Some(reason) = selinux::lock_denial(restricted, peer) {
-                let connection = client
-                    .as_ref()
-                    .map(|client| format!("{:?}", client.id()))
+                let connection = data
+                    .map(|data| data.connection_id.to_string())
                     .unwrap_or_else(|| "unavailable".into());
                 selinux::audit_lock_denial(peer, server, connection, reason);
                 return;
@@ -7169,6 +7175,7 @@ pub struct ClientState {
     pub credentials_unknown: bool,
     /// Cached before the accepted stream enters the Wayland backend.
     pub(crate) peer_label: PeerLabel,
+    connection_id: u64,
 }
 
 impl ClientData for ClientState {
