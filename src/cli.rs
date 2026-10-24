@@ -27,8 +27,11 @@ pub struct Cli {
     #[arg(long)]
     pub session: bool,
     /// Run the system-declared SELinux desktop session.
-    #[arg(long, requires_all = ["session", "config"])]
+    #[arg(long, requires_all = ["session", "config", "session_bridge"])]
     pub selinux_session: bool,
+    /// Immutable ordinary-domain bridge for desktop service readiness and exit.
+    #[arg(long, requires = "selinux_session")]
+    pub session_bridge: Option<PathBuf>,
     /// System-declared immutable libinput plugin directory.
     #[arg(long, requires = "selinux_session")]
     pub libinput_plugin_path: Vec<PathBuf>,
@@ -54,6 +57,8 @@ mod selinux_tests {
             "--selinux-session",
             "--config",
             "/nix/store/config.kdl",
+            "--session-bridge",
+            "/nix/store/session-bridge",
             "--libinput-plugin-path",
             "/nix/store/plugins",
         ])

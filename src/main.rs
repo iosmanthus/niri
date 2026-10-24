@@ -71,7 +71,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let cli = Cli::parse();
     if cli.selinux_session {
-        selinux_session::initialize(&cli.libinput_plugin_path)?;
+        selinux_session::initialize(
+            &cli.libinput_plugin_path,
+            cli.session_bridge.as_deref().unwrap(),
+        )?;
     }
 
     if cli.session {
@@ -245,7 +248,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if cli.session {
         // We're starting as a session. Import our variables.
-        import_environment();
+        if !cli.selinux_session {
+            import_environment();
+        }
 
         // Inhibit power key handling so we can suspend on it.
         #[cfg(feature = "dbus")]
@@ -269,6 +274,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if cli.session {
         state.niri.a11y.start();
     }
+
+    let _session_bridge = selinux_session::start_bridge()?;
 
     if env::var_os("NIRI_DISABLE_SYSTEM_MANAGER_NOTIFY").is_none_or(|x| x != "1") {
         // Notify systemd we're ready.
