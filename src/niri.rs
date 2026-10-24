@@ -1,6 +1,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
+use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -174,6 +175,7 @@ use crate::render_helpers::{
 };
 #[cfg(feature = "xdp-gnome-screencast")]
 use crate::screencasting::Screencasting;
+use crate::selinux::{self, ClientOrigin, PeerLabel};
 use crate::ui::config_error_notification::ConfigErrorNotification;
 use crate::ui::exit_confirm_dialog::{ExitConfirmDialog, ExitConfirmDialogRenderElement};
 use crate::ui::hotkey_overlay::HotkeyOverlay;
@@ -2592,6 +2594,7 @@ impl Niri {
                         client,
                         restricted: false,
                         credentials_unknown: false,
+                        origin: ClientOrigin::Listener,
                     });
                 })
                 .unwrap();
@@ -2799,8 +2802,10 @@ impl Niri {
             client,
             restricted,
             credentials_unknown,
+            origin,
         } = client;
 
+        let peer_label = selinux::peer_label(client.as_raw_fd(), origin);
         let config = self.config.borrow();
         let data = Arc::new(ClientState {
             compositor_state: Default::default(),
@@ -2808,6 +2813,7 @@ impl Niri {
             primary_selection_disabled: config.clipboard.disable_primary,
             restricted,
             credentials_unknown,
+            peer_label,
         });
 
         if let Err(err) = self.display_handle.insert_client(client, data) {
@@ -7083,6 +7089,7 @@ pub struct NewClient {
     pub client: UnixStream,
     pub restricted: bool,
     pub credentials_unknown: bool,
+    pub origin: ClientOrigin,
 }
 
 pub struct ClientState {
@@ -7093,6 +7100,8 @@ pub struct ClientState {
     pub restricted: bool,
     /// We cannot retrieve this client's socket credentials.
     pub credentials_unknown: bool,
+    /// Cached before the accepted stream enters the Wayland backend.
+    pub(crate) peer_label: PeerLabel,
 }
 
 impl ClientData for ClientState {
