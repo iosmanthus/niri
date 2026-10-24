@@ -101,6 +101,7 @@ impl Fixture {
             client: sock1,
             restricted: false,
             credentials_unknown: false,
+            origin: crate::selinux::ClientOrigin::Imported,
         });
 
         let client = Client::new(sock2);
