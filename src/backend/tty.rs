@@ -3520,7 +3520,12 @@ unsafe fn init_libinput_plugin_system(libinput: &Libinput) {
         let libinput = libinput.as_raw();
 
         // Also load plugins from $XDG_CONFIG_HOME/libinput/plugins.
-        if let Some(dirs) = BaseDirs::new() {
+        if let Some(session) = crate::selinux_session::get() {
+            for path in &session.libinput_plugins {
+                let path = CString::new(path.clone().into_os_string().into_vec()).unwrap();
+                libinput_plugin_system_append_path(libinput, path.as_ptr());
+            }
+        } else if let Some(dirs) = BaseDirs::new() {
             let mut plugins_dir = dirs.config_dir().to_path_buf();
             plugins_dir.push("libinput");
             plugins_dir.push("plugins");
@@ -3529,7 +3534,9 @@ unsafe fn init_libinput_plugin_system(libinput: &Libinput) {
             }
         }
 
-        libinput_plugin_system_append_default_paths(libinput);
+        if crate::selinux_session::get().is_none() {
+            libinput_plugin_system_append_default_paths(libinput);
+        }
         libinput_plugin_system_load_plugins(libinput, LIBINPUT_PLUGIN_SYSTEM_FLAG_NONE);
     }
     #[cfg(not(have_libinput_plugin_system))]

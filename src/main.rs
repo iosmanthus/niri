@@ -20,6 +20,7 @@ use niri::cli::{Cli, CompletionShell, Sub};
 use niri::dbus;
 use niri::ipc::client::handle_msg;
 use niri::niri::State;
+use niri::selinux_session;
 use niri::utils::spawning::{
     spawn, spawn_sh, store_and_increase_nofile_rlimit, CHILD_DISPLAY, CHILD_ENV,
     REMOVE_ENV_RUST_BACKTRACE, REMOVE_ENV_RUST_LIB_BACKTRACE,
@@ -69,6 +70,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let cli = Cli::parse();
+    if cli.selinux_session {
+        selinux_session::initialize(&cli.libinput_plugin_path)?;
+    }
 
     if cli.session {
         // If we're starting as a session, assume that the intention is to start on a TTY unless
@@ -99,10 +103,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Handle subcommands.
     if let Some(subcommand) = cli.subcommand {
         match subcommand {
-            Sub::Validate { config } => {
+            Sub::Validate { config, immutable } => {
                 tracy_client::Client::start();
 
-                config_path(config).load().config?;
+                if immutable {
+                    Config::load_immutable(&config.unwrap()).config?;
+                } else {
+                    config_path(config).load().config?;
+                }
                 info!("config is valid");
                 return Ok(());
             }
@@ -157,7 +165,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Load the config.
     let config_path = config_path(cli.config);
     env::remove_var("NIRI_CONFIG");
-    let (config_created_at, config_load_result) = config_path.load_or_create();
+    let (config_created_at, config_load_result) = if cli.selinux_session {
+        let ConfigPath::Explicit(path) = &config_path else {
+            return Err("protected session requires an explicit store configuration".into());
+        };
+        let result = Config::load_immutable(path);
+        if result.config.is_err() {
+            return Err(result.config.unwrap_err().into());
+        }
+        (None, result)
+    } else {
+        config_path.load_or_create()
+    };
     let config_errored = config_load_result.config.is_err();
     let mut config = config_load_result.config.unwrap_or_else(|err| {
         warn!("{err:?}");
@@ -168,6 +187,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let spawn_at_startup = mem::take(&mut config.spawn_at_startup);
     let spawn_sh_at_startup = mem::take(&mut config.spawn_sh_at_startup);
     *CHILD_ENV.write().unwrap() = mem::take(&mut config.environment);
+    if cli.selinux_session {
+        selinux_session::restore_child_directories(&mut CHILD_ENV.write().unwrap());
+    }
 
     store_and_increase_nofile_rlimit();
 
@@ -260,7 +282,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    watcher::setup(&mut state, &config_path, config_includes);
+    if !cli.selinux_session {
+        watcher::setup(&mut state, &config_path, config_includes);
+    }
 
     // Spawn commands from cli and auto-start.
     spawn(cli.command, None);
