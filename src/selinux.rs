@@ -143,11 +143,43 @@ pub fn compositor_context() -> anyhow::Result<SecurityContext> {
     );
     let context = query_context(|ptr| unsafe { getcon_raw(ptr) })
         .map_err(|reason| anyhow::anyhow!("cannot query compositor context: {reason:?}"))?;
+    require_compositor(context)
+}
+
+fn require_compositor(context: SecurityContext) -> anyhow::Result<SecurityContext> {
     anyhow::ensure!(
         context.type_name() == "niri_t",
         "protected session requires niri_t"
     );
     Ok(context)
+}
+
+pub fn lock_denial(restricted: bool, peer: &PeerLabel) -> Option<&'static str> {
+    if restricted {
+        return Some("restricted-client");
+    }
+    match peer {
+        PeerLabel::Known(context) if context.type_name() == "locker_t" => None,
+        PeerLabel::Known(_) => Some("peer-type"),
+        PeerLabel::Unknown(reason) => Some(reason.as_str()),
+    }
+}
+
+pub fn audit_lock_denial(
+    peer: &PeerLabel,
+    server: &SecurityContext,
+    connection: String,
+    reason: &str,
+) {
+    let peer_context = match peer {
+        PeerLabel::Known(context) => Some(context.raw()),
+        PeerLabel::Unknown(_) => None,
+    };
+    let event = serde_json::json!({
+        "manager": "niri", "op": "session-lock", "peer_context": peer_context,
+        "server_context": server.raw(), "connection": connection, "reason": reason,
+    });
+    warn!("avc: denied {event}");
 }
 
 pub fn peer_label(fd: RawFd, origin: ClientOrigin) -> PeerLabel {
@@ -168,6 +200,31 @@ thread_local! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn p13_compositor_context_requires_its_exact_kernel_type() {
+        assert!(require_compositor(SecurityContext::for_test("u:r:niri_t:s0")).is_ok());
+        assert!(require_compositor(SecurityContext::for_test("u:r:unconfined_t:s0")).is_err());
+        assert!(require_compositor(SecurityContext::for_test("u:r:niri_t_extra:s0")).is_err());
+    }
+
+    #[test]
+    fn p13_restricted_and_unknown_peers_cannot_acquire_the_lock() {
+        let locker = PeerLabel::Known(SecurityContext::for_test("u:r:locker_t:s0"));
+        assert_eq!(lock_denial(false, &locker), None);
+        assert_eq!(lock_denial(true, &locker), Some("restricted-client"));
+        assert_eq!(
+            lock_denial(false, &PeerLabel::Unknown(UnknownReason::NotDirect)),
+            Some("unknown-provenance")
+        );
+        assert_eq!(
+            lock_denial(
+                false,
+                &PeerLabel::Known(SecurityContext::for_test("u:r:locker_t_extra:s0"))
+            ),
+            Some("peer-type")
+        );
+    }
 
     fn supplied(text: &CStr, status: c_int) -> Result<SecurityContext, UnknownReason> {
         query_context(|ptr| unsafe {

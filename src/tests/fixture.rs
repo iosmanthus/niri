@@ -4,7 +4,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use calloop::generic::Generic;
-use calloop::{EventLoop, Interest, LoopHandle, Mode, PostAction};
+use calloop::{EventLoop, Interest, LoopHandle, Mode, PostAction, RegistrationToken};
 use niri_config::Config;
 use smithay::output::Output;
 
@@ -16,6 +16,7 @@ pub struct Fixture {
     pub event_loop: EventLoop<'static, State>,
     pub handle: LoopHandle<'static, State>,
     pub state: State,
+    client_sources: Vec<(ClientId, RegistrationToken)>,
 }
 
 pub struct State {
@@ -51,6 +52,7 @@ impl Fixture {
             event_loop,
             handle,
             state,
+            client_sources: Vec::new(),
         }
     }
 
@@ -96,29 +98,51 @@ impl Fixture {
     }
 
     pub fn add_client(&mut self) -> ClientId {
+        self.add_client_with_peer(None)
+    }
+
+    pub fn add_client_with_peer(&mut self, peer: Option<crate::selinux::PeerLabel>) -> ClientId {
         let (sock1, sock2) = UnixStream::pair().unwrap();
-        self.niri().insert_client(NewClient {
+        let client = NewClient {
             client: sock1,
             restricted: false,
             credentials_unknown: false,
             origin: crate::selinux::ClientOrigin::Imported,
-        });
+        };
+        if let Some(peer) = peer {
+            self.niri().insert_test_client(client, peer);
+        } else {
+            self.niri().insert_client(client);
+        }
 
         let client = Client::new(sock2);
         let id = client.id;
 
         let fd = client.event_loop.as_fd().try_clone_to_owned().unwrap();
         let source = Generic::new(fd, Interest::READ, Mode::Level);
-        self.handle
+        let token = self
+            .handle
             .insert_source(source, move |_, _, state: &mut State| {
                 state.client(id).dispatch();
                 Ok(PostAction::Continue)
             })
             .unwrap();
+        self.client_sources.push((id, token));
 
         self.state.clients.push(client);
         self.roundtrip(id);
         id
+    }
+
+    pub fn remove_client(&mut self, id: ClientId) {
+        let index = self
+            .client_sources
+            .iter()
+            .position(|(client, _)| *client == id)
+            .unwrap();
+        let (_, token) = self.client_sources.swap_remove(index);
+        self.handle.remove(token);
+        self.state.clients.retain(|client| client.id != id);
     }
 
     pub fn client(&mut self, id: ClientId) -> &mut Client {

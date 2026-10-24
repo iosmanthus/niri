@@ -12,6 +12,7 @@ mod fullscreen;
 mod layer_shell;
 mod pointer_constraints;
 mod remove_output;
+mod session_lock;
 mod transactions;
 mod virtual_pointer;
 mod window_opening;
