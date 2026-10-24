@@ -60,12 +60,44 @@ pub fn initialize(plugins: &[PathBuf], bridge: &Path) -> anyhow::Result<()> {
         .iter()
         .map(|path| store_path(path))
         .collect::<anyhow::Result<_>>()?;
+    journal_stderr()?;
     SESSION
         .set(Session {
             libinput_plugins,
             bridge: store_path(bridge)?,
         })
         .map_err(|_| anyhow::anyhow!("session already initialized"))
+}
+
+#[cfg(feature = "systemd")]
+fn journal_stderr() -> anyhow::Result<()> {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+
+    #[link(name = "systemd")]
+    unsafe extern "C" {
+        fn sd_journal_stream_fd(
+            identifier: *const libc::c_char,
+            priority: libc::c_int,
+            level_prefix: libc::c_int,
+        ) -> libc::c_int;
+    }
+    // greetd supplies the login terminal. Open the journal stream here so
+    // its credentials identify the running compositor, not a user service.
+    let fd = unsafe { sd_journal_stream_fd(c"niri".as_ptr(), libc::LOG_INFO, 0) };
+    if fd < 0 {
+        return Err(std::io::Error::from_raw_os_error(-fd))
+            .context("cannot open compositor journal stream");
+    }
+    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+    if unsafe { libc::dup2(fd.as_raw_fd(), libc::STDERR_FILENO) } < 0 {
+        return Err(std::io::Error::last_os_error()).context("cannot redirect compositor stderr");
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "systemd"))]
+fn journal_stderr() -> anyhow::Result<()> {
+    bail!("--selinux-session requires systemd support")
 }
 
 /// The pipe is kept until compositor exit. Its close-on-exec writer cannot
