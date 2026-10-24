@@ -119,6 +119,8 @@ pub enum Request {
     OverviewState,
     /// Request information about screencasts.
     Casts,
+    /// Read the compositor's session-lock and per-output render state.
+    SessionLockState,
 }
 
 /// Reply from niri to client.
@@ -165,6 +167,27 @@ pub enum Response {
     OverviewState(Overview),
     /// Information about screencasts.
     Casts(Vec<Cast>),
+    /// Session-lock state; this response grants no lock-management operation.
+    SessionLockState(SessionLockStatus),
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "kebab-case")]
+pub enum SessionLockPhase {
+    Unlocked,
+    WaitingForSurfaces,
+    Locking,
+    Locked,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+pub struct SessionLockStatus {
+    pub phase: SessionLockPhase,
+    pub client_alive: bool,
+    /// Whether each output completed a locked render (or is inactive).
+    pub outputs: HashMap<String, bool>,
 }
 
 /// Overview information.
