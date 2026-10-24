@@ -19,6 +19,7 @@
           libGL,
           libdisplay-info_0_3,
           libinput,
+          libselinux,
           seatd,
           libxkbcommon,
           libgbm,
@@ -80,6 +81,7 @@
               libGL
               libdisplay-info_0_3
               libinput
+              libselinux
               seatd
               libxkbcommon
               libgbm
