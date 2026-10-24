@@ -26,12 +26,64 @@ pub struct Cli {
     /// on a TTY as your non-main compositor instance, to avoid messing up the global environment.
     #[arg(long)]
     pub session: bool,
+    /// Run the system-declared SELinux desktop session.
+    #[arg(long, requires_all = ["session", "config"])]
+    pub selinux_session: bool,
+    /// System-declared immutable libinput plugin directory.
+    #[arg(long, requires = "selinux_session")]
+    pub libinput_plugin_path: Vec<PathBuf>,
     /// Command to run upon compositor startup.
     #[arg(last = true)]
     pub command: Vec<OsString>,
 
     #[command(subcommand)]
     pub subcommand: Option<Sub>,
+}
+
+#[cfg(test)]
+mod selinux_tests {
+    use super::*;
+
+    #[test]
+    fn p11_protected_start_requires_session_and_explicit_config() {
+        assert!(Cli::try_parse_from(["niri", "--selinux-session"]).is_err());
+        assert!(Cli::try_parse_from(["niri", "--selinux-session", "--session"]).is_err());
+        let cli = Cli::try_parse_from([
+            "niri",
+            "--session",
+            "--selinux-session",
+            "--config",
+            "/nix/store/config.kdl",
+            "--libinput-plugin-path",
+            "/nix/store/plugins",
+        ])
+        .unwrap();
+        assert!(cli.selinux_session && cli.session);
+        assert_eq!(
+            cli.libinput_plugin_path,
+            [PathBuf::from("/nix/store/plugins")]
+        );
+    }
+
+    #[test]
+    fn p11_immutable_validation_requires_an_explicit_file() {
+        assert!(Cli::try_parse_from(["niri", "validate", "--immutable"]).is_err());
+        let cli = Cli::try_parse_from([
+            "niri",
+            "validate",
+            "--immutable",
+            "--config",
+            "/nix/store/config.kdl",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.subcommand,
+            Some(Sub::Validate {
+                immutable: true,
+                ..
+            })
+        ));
+    }
 }
 
 #[derive(Subcommand)]
@@ -55,6 +107,9 @@ pub enum Sub {
         /// command line argument takes precedence.
         #[arg(short, long)]
         config: Option<PathBuf>,
+        /// Require the config and every include to resolve inside the Nix store.
+        #[arg(long, requires = "config")]
+        immutable: bool,
     },
     /// Cause a panic to check if the backtraces are good.
     Panic,

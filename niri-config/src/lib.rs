@@ -117,6 +117,7 @@ pub enum ConfigPath {
 struct BasePath(PathBuf);
 struct RootBase(PathBuf);
 struct Recursion(u8);
+struct ImmutableConfig(bool);
 
 // FIXME: This is currently used to track all the files that needed to be watched. The name
 // `Includes` is not really correct and should be renamed in the future.
@@ -152,6 +153,7 @@ where
         let includes = ctx.get::<Rc<RefCell<Includes>>>().unwrap().clone();
         let include_errors = ctx.get::<Rc<RefCell<IncludeErrors>>>().unwrap().clone();
         let recursion = ctx.get::<Recursion>().unwrap().0;
+        let immutable = ctx.get::<ImmutableConfig>().unwrap().0;
         let saw_mru_binds = ctx.get::<SawMruBinds>().unwrap().0.clone();
 
         let mut seen = HashSet::new();
@@ -348,9 +350,18 @@ where
                     let decoded_path = knuffel::traits::DecodeScalar::decode(path_val, ctx)?;
 
                     // Expand ~ into the home dir
-                    let Some(path) = expand_home_path(decoded_path, node, ctx) else {
+                    let Some(mut path) = expand_home_path(decoded_path, node, ctx) else {
                         continue;
                     };
+                    if immutable {
+                        match immutable_config_path(&path) {
+                            Ok(resolved) => path = resolved,
+                            Err(err) => {
+                                ctx.emit_error(DecodeError::missing(node, err.to_string()));
+                                continue;
+                            }
+                        }
+                    }
 
                     let recursion = ctx.get::<Recursion>().unwrap().0 + 1;
                     if recursion == RECURSION_LIMIT {
@@ -403,6 +414,7 @@ where
                                 ctx.set(BasePath(base));
                                 ctx.set(RootBase(root_base.clone()));
                                 ctx.set(Recursion(recursion));
+                                ctx.set(ImmutableConfig(immutable));
                                 ctx.set(includes.clone());
                                 ctx.set(include_errors.clone());
                                 ctx.set(IncludeStack(include_stack));
@@ -485,6 +497,28 @@ impl Config {
     }
 
     pub fn parse(path: &Path, text: &str) -> ConfigParseResult<Self, ConfigIncludeError> {
+        Self::parse_inner(path, text, false)
+    }
+
+    /// P11: read only immutable store files, including every nested include.
+    pub fn load_immutable(path: &Path) -> ConfigParseResult<Self, miette::Report> {
+        let path = match immutable_config_path(path) {
+            Ok(path) => path,
+            Err(err) => return ConfigParseResult::from_err(miette!(err)),
+        };
+        let text = match fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(err) => return ConfigParseResult::from_err(miette!(err)),
+        };
+        Self::parse_inner(&path, &text, true)
+            .map_config_res(|res| res.context("error parsing immutable config"))
+    }
+
+    fn parse_inner(
+        path: &Path,
+        text: &str,
+        immutable: bool,
+    ) -> ConfigParseResult<Self, ConfigIncludeError> {
         let base = path.parent().map(Path::to_path_buf).unwrap_or_default();
         let filename = path
             .file_name()
@@ -503,6 +537,7 @@ impl Config {
                 ctx.set(BasePath(base.clone()));
                 ctx.set(RootBase(base));
                 ctx.set(Recursion(0));
+                ctx.set(ImmutableConfig(immutable));
                 ctx.set(includes.clone());
                 ctx.set(include_errors.clone());
                 ctx.set(IncludeStack(include_stack));
@@ -525,6 +560,55 @@ impl Config {
 
     pub fn parse_mem(text: &str) -> Result<Self, ConfigIncludeError> {
         Self::parse(Path::new("config.kdl"), text).config
+    }
+}
+
+fn immutable_config_path(path: &Path) -> std::io::Result<PathBuf> {
+    let path = path.canonicalize()?;
+    if !path.starts_with("/nix/store") || path == Path::new("/nix/store") {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "protected session config must resolve inside /nix/store",
+        ));
+    }
+    Ok(path)
+}
+
+#[cfg(test)]
+mod immutable_tests {
+    use super::*;
+
+    #[test]
+    fn p11_ordinary_config_reads_user_include_but_immutable_config_refuses_it() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path =
+            std::env::temp_dir().join(format!("niri-config-{}-{stamp}.kdl", std::process::id()));
+        let mut file = File::options()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        file.write_all(b"prefer-no-csd\n").unwrap();
+        let text = format!("include {:?}\n", path);
+        let root = Path::new("/nix/store/fixed-config.kdl");
+        assert!(Config::parse(root, &text).config.is_ok());
+        assert!(Config::parse_inner(root, &text, true).config.is_err());
+        assert!(Config::load_immutable(&path).config.is_err());
+        assert!(Config::parse_inner(root, "prefer-no-csd\n", true)
+            .config
+            .is_ok());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn p11_optional_user_include_is_still_refused() {
+        let root = Path::new("/nix/store/fixed-config.kdl");
+        let text = "include \"/home/missing-niri-config.kdl\" optional=true\n";
+        assert!(Config::parse(root, text).config.is_ok());
+        assert!(Config::parse_inner(root, text, true).config.is_err());
     }
 }
 
