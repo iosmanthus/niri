@@ -11,6 +11,7 @@ use niri_config::misc::{Environment, EnvironmentVariable};
 
 pub struct Session {
     pub libinput_plugins: Vec<PathBuf>,
+    pub wayland_display: String,
     bridge: PathBuf,
 }
 
@@ -39,11 +40,19 @@ fn store_path(path: &Path) -> anyhow::Result<PathBuf> {
     Ok(path)
 }
 
-pub fn initialize(plugins: &[PathBuf], bridge: &Path) -> anyhow::Result<()> {
+fn listener_name(name: &str) -> bool {
+    name.strip_prefix("wayland-")
+        .is_some_and(|suffix| !suffix.is_empty() && suffix.bytes().all(|c| c.is_ascii_digit()))
+}
+
+pub fn initialize(plugins: &[PathBuf], bridge: &Path, wayland_display: &str) -> anyhow::Result<()> {
     let context = std::fs::read_to_string("/proc/self/attr/current")
         .context("cannot query the protected compositor context")?;
     if !compositor_context(&context) {
         bail!("--selinux-session requires the niri_t process context");
+    }
+    if !listener_name(wayland_display) {
+        bail!("protected-session listener must be a fixed wayland-N name");
     }
     // The entry fixes these paths before exec, including when debugging a
     // permissive policy. User layer/config directories are never searched.
@@ -64,6 +73,7 @@ pub fn initialize(plugins: &[PathBuf], bridge: &Path) -> anyhow::Result<()> {
     SESSION
         .set(Session {
             libinput_plugins,
+            wayland_display: wayland_display.into(),
             bridge: store_path(bridge)?,
         })
         .map_err(|_| anyhow::anyhow!("session already initialized"))
@@ -139,6 +149,20 @@ pub fn restore_child_directories(environment: &mut Environment) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn p12_fixed_listener_is_a_name_in_the_runtime_directory() {
+        assert!(listener_name("wayland-1"));
+        for name in [
+            "",
+            "wayland-",
+            "/tmp/wayland-1",
+            "../wayland-1",
+            "wayland-1/other",
+        ] {
+            assert!(!listener_name(name));
+        }
+    }
 
     #[test]
     fn p11_only_the_kernel_compositor_type_is_accepted() {

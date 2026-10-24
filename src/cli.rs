@@ -27,11 +27,14 @@ pub struct Cli {
     #[arg(long)]
     pub session: bool,
     /// Run the system-declared SELinux desktop session.
-    #[arg(long, requires_all = ["session", "config", "session_bridge"])]
+    #[arg(long, requires_all = ["session", "config", "session_bridge", "wayland_display"])]
     pub selinux_session: bool,
     /// Immutable ordinary-domain bridge for desktop service readiness and exit.
     #[arg(long, requires = "selinux_session")]
     pub session_bridge: Option<PathBuf>,
+    /// Fixed protected-session Wayland listener name; collisions are fatal.
+    #[arg(long, requires = "selinux_session")]
+    pub wayland_display: Option<String>,
     /// System-declared immutable libinput plugin directory.
     #[arg(long, requires = "selinux_session")]
     pub libinput_plugin_path: Vec<PathBuf>,
@@ -59,6 +62,8 @@ mod selinux_tests {
             "/nix/store/config.kdl",
             "--session-bridge",
             "/nix/store/session-bridge",
+            "--wayland-display",
+            "wayland-1",
             "--libinput-plugin-path",
             "/nix/store/plugins",
         ])
