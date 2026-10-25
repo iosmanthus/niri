@@ -506,7 +506,6 @@ impl SecurityContextHandler for State {
                     client,
                     restricted: true,
                     credentials_unknown: false,
-                    origin: crate::selinux::ClientOrigin::SecurityContext,
                 });
             })
             .unwrap();

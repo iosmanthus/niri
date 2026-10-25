@@ -563,9 +563,14 @@ impl Config {
     }
 }
 
+/// Whether an already canonical path is below the Nix store root.
+pub fn path_is_in_store(path: &Path) -> bool {
+    path.starts_with("/nix/store") && path != Path::new("/nix/store")
+}
+
 fn immutable_config_path(path: &Path) -> std::io::Result<PathBuf> {
     let path = path.canonicalize()?;
-    if !path.starts_with("/nix/store") || path == Path::new("/nix/store") {
+    if !path_is_in_store(&path) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             "protected session config must resolve inside /nix/store",

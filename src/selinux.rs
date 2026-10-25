@@ -51,13 +51,6 @@ pub enum PeerLabel {
     Unknown(UnknownReason),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ClientOrigin {
-    Listener,
-    SecurityContext,
-    Imported,
-}
-
 struct RawContext(NonNull<c_char>);
 
 impl Drop for RawContext {
@@ -182,8 +175,8 @@ pub fn audit_lock_denial(
     warn!("avc: denied {event}");
 }
 
-pub fn peer_label(fd: RawFd, origin: ClientOrigin) -> PeerLabel {
-    if origin != ClientOrigin::Listener {
+pub fn peer_label(fd: RawFd, direct: bool) -> PeerLabel {
+    if !direct {
         return PeerLabel::Unknown(UnknownReason::NotDirect);
     }
     match query_context(|ptr| unsafe { getpeercon_raw(fd, ptr) }) {
@@ -264,14 +257,12 @@ mod tests {
 
     #[test]
     fn p13_every_non_listener_origin_is_unknown_even_with_a_socket_label() {
-        for origin in [ClientOrigin::SecurityContext, ClientOrigin::Imported] {
-            assert_eq!(
-                peer_label(-1, origin),
-                PeerLabel::Unknown(UnknownReason::NotDirect)
-            );
-        }
         assert_eq!(
-            peer_label(-1, ClientOrigin::Listener),
+            peer_label(-1, false),
+            PeerLabel::Unknown(UnknownReason::NotDirect)
+        );
+        assert_eq!(
+            peer_label(-1, true),
             PeerLabel::Unknown(UnknownReason::QueryFailed)
         );
     }

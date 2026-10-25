@@ -107,7 +107,6 @@ impl Fixture {
             client: sock1,
             restricted: false,
             credentials_unknown: false,
-            origin: crate::selinux::ClientOrigin::Imported,
         };
         if let Some(peer) = peer {
             self.niri().insert_test_client(client, peer);

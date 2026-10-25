@@ -177,7 +177,7 @@ use crate::render_helpers::{
 };
 #[cfg(feature = "xdp-gnome-screencast")]
 use crate::screencasting::Screencasting;
-use crate::selinux::{self, ClientOrigin, PeerLabel, SecurityContext, UnknownReason};
+use crate::selinux::{self, PeerLabel, SecurityContext, UnknownReason};
 use crate::ui::config_error_notification::ConfigErrorNotification;
 use crate::ui::exit_confirm_dialog::{ExitConfirmDialog, ExitConfirmDialogRenderElement};
 use crate::ui::hotkey_overlay::HotkeyOverlay;
@@ -2607,7 +2607,6 @@ impl Niri {
                         client,
                         restricted: false,
                         credentials_unknown: false,
-                        origin: ClientOrigin::Listener,
                     });
                 })
                 .unwrap();
@@ -2813,7 +2812,8 @@ impl Niri {
     }
 
     pub fn insert_client(&mut self, client: NewClient) {
-        let peer_label = selinux::peer_label(client.client.as_raw_fd(), client.origin);
+        let direct = !client.restricted && !client.credentials_unknown;
+        let peer_label = selinux::peer_label(client.client.as_raw_fd(), direct);
         self.insert_client_with_peer(client, peer_label);
     }
 
@@ -2826,7 +2826,6 @@ impl Niri {
             client,
             restricted,
             credentials_unknown,
-            origin: _,
         } = client;
 
         let config = self.config.borrow();
@@ -7199,7 +7198,6 @@ pub struct NewClient {
     pub client: UnixStream,
     pub restricted: bool,
     pub credentials_unknown: bool,
-    pub origin: ClientOrigin,
 }
 
 pub struct ClientState {
