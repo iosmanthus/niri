@@ -8,13 +8,20 @@ use std::sync::OnceLock;
 
 use anyhow::{bail, Context};
 use niri_config::misc::{Environment, EnvironmentVariable};
+use niri_config::path_is_in_store;
 
 pub struct Session {
-    pub libinput_plugins: Vec<PathBuf>,
     pub wayland_display: String,
     pub(crate) context: crate::selinux::SecurityContext,
     bridge: PathBuf,
 }
+
+const FIXED_DIRECTORIES: [&str; 4] = [
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "VK_LAYER_PATH",
+    "VK_IMPLICIT_LAYER_PATH",
+];
 
 static SESSION: OnceLock<Session> = OnceLock::new();
 
@@ -26,7 +33,7 @@ fn store_path(path: &Path) -> anyhow::Result<PathBuf> {
     let path = path
         .canonicalize()
         .with_context(|| format!("cannot resolve {path:?}"))?;
-    if !path.starts_with("/nix/store") || path == Path::new("/nix/store") {
+    if !path_is_in_store(&path) {
         bail!("protected-session path must resolve inside /nix/store: {path:?}");
     }
     Ok(path)
@@ -37,30 +44,20 @@ fn listener_name(name: &str) -> bool {
         .is_some_and(|suffix| !suffix.is_empty() && suffix.bytes().all(|c| c.is_ascii_digit()))
 }
 
-pub fn initialize(plugins: &[PathBuf], bridge: &Path, wayland_display: &str) -> anyhow::Result<()> {
+pub fn initialize(bridge: &Path, wayland_display: &str) -> anyhow::Result<()> {
     let context = crate::selinux::compositor_context()?;
     if !listener_name(wayland_display) {
         bail!("protected-session listener must be a fixed wayland-N name");
     }
     // The entry fixes these paths before exec, including when debugging a
     // permissive policy. User layer/config directories are never searched.
-    for name in [
-        "XDG_CONFIG_HOME",
-        "XDG_DATA_HOME",
-        "VK_LAYER_PATH",
-        "VK_IMPLICIT_LAYER_PATH",
-    ] {
+    for name in FIXED_DIRECTORIES {
         let value = env::var_os(name).with_context(|| format!("missing fixed {name}"))?;
         store_path(Path::new(&value))?;
     }
-    let libinput_plugins = plugins
-        .iter()
-        .map(|path| store_path(path))
-        .collect::<anyhow::Result<_>>()?;
     journal_stderr()?;
     SESSION
         .set(Session {
-            libinput_plugins,
             wayland_display: wayland_display.into(),
             context,
             bridge: store_path(bridge)?,
@@ -120,12 +117,7 @@ pub fn start_bridge() -> anyhow::Result<Option<ChildStdin>> {
 
 pub fn restore_child_directories(environment: &mut Environment) {
     // Applications run in the ordinary domain and use their own settings.
-    for name in [
-        "XDG_CONFIG_HOME",
-        "XDG_DATA_HOME",
-        "VK_LAYER_PATH",
-        "VK_IMPLICIT_LAYER_PATH",
-    ] {
+    for name in FIXED_DIRECTORIES {
         if !environment.0.iter().any(|variable| variable.name == name) {
             environment.0.push(EnvironmentVariable {
                 name: name.into(),
@@ -165,7 +157,7 @@ mod tests {
     }
 
     #[test]
-    fn p11_user_plugin_path_is_refused() {
+    fn p11_user_search_path_is_refused() {
         assert!(store_path(Path::new("/tmp")).is_err());
     }
 }

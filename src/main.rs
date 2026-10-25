@@ -72,7 +72,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     if cli.selinux_session {
         selinux_session::initialize(
-            &cli.libinput_plugin_path,
             cli.session_bridge.as_deref().unwrap(),
             cli.wayland_display.as_deref().unwrap(),
         )?;

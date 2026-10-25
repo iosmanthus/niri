@@ -35,9 +35,6 @@ pub struct Cli {
     /// Fixed protected-session Wayland listener name; collisions are fatal.
     #[arg(long, requires = "selinux_session")]
     pub wayland_display: Option<String>,
-    /// System-declared immutable libinput plugin directory.
-    #[arg(long, requires = "selinux_session")]
-    pub libinput_plugin_path: Vec<PathBuf>,
     /// Command to run upon compositor startup.
     #[arg(last = true)]
     pub command: Vec<OsString>,
@@ -64,15 +61,9 @@ mod selinux_tests {
             "/nix/store/session-bridge",
             "--wayland-display",
             "wayland-1",
-            "--libinput-plugin-path",
-            "/nix/store/plugins",
         ])
         .unwrap();
         assert!(cli.selinux_session && cli.session);
-        assert_eq!(
-            cli.libinput_plugin_path,
-            [PathBuf::from("/nix/store/plugins")]
-        );
     }
 
     #[test]
