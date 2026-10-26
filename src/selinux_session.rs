@@ -10,6 +10,8 @@ use anyhow::{bail, Context};
 use niri_config::misc::{Environment, EnvironmentVariable};
 use niri_config::path_is_in_store;
 
+use crate::utils::spawning::CHILD_DISPLAY;
+
 pub struct Session {
     pub wayland_display: String,
     pub(crate) context: crate::selinux::SecurityContext,
@@ -102,7 +104,12 @@ pub fn start_bridge() -> anyhow::Result<Option<ChildStdin>> {
     let Some(session) = get() else {
         return Ok(None);
     };
-    let mut child = Command::new(&session.bridge)
+    let mut command = Command::new(&session.bridge);
+    match &*CHILD_DISPLAY.read().unwrap() {
+        Some(display) => command.env("DISPLAY", display),
+        None => command.env_remove("DISPLAY"),
+    };
+    let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
