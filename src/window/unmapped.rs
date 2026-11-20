@@ -12,6 +12,9 @@ pub struct Unmapped {
     pub state: InitialConfigureState,
     /// Activation token, if one was used on this unmapped window.
     pub activation_token_data: Option<XdgActivationTokenData>,
+    /// Whether a tiled window of the same app was mapped when the initial configure was
+    /// sent; set there and kept when the window maps.
+    pub is_secondary: bool,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -87,6 +90,7 @@ impl Unmapped {
                 wants_maximized: false,
             },
             activation_token_data: None,
+            is_secondary: false,
         }
     }
 

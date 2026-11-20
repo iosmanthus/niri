@@ -1079,10 +1079,13 @@ impl State {
     pub fn send_initial_configure(&mut self, toplevel: &ToplevelSurface) {
         let _span = tracy_client::span!("State::send_initial_configure");
 
+        let is_secondary = self.niri.opens_as_secondary(toplevel);
+
         let Some(unmapped) = self.niri.unmapped_windows.get_mut(toplevel.wl_surface()) else {
             error!("window must be present in unmapped_windows in send_initial_configure()");
             return;
         };
+        unmapped.is_secondary = is_secondary;
 
         let config = self.niri.config.borrow();
         let rules = ResolvedWindowRules::compute(

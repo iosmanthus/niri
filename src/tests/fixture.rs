@@ -10,7 +10,7 @@ use smithay::output::Output;
 
 use super::client::{Client, ClientId};
 use super::server::Server;
-use crate::niri::{NewClient, Niri};
+use crate::niri::{NewClient, Niri, SecurityContextApp};
 
 pub struct Fixture {
     pub event_loop: EventLoop<'static, State>,
@@ -96,11 +96,30 @@ impl Fixture {
     }
 
     pub fn add_client(&mut self) -> ClientId {
+        self.add_client_with(false, None)
+    }
+
+    /// A client that connected through a security context of sandbox engine `engine`
+    /// with `app_id`, as Flatpak (engine org.flatpak) connects its apps.
+    pub fn add_security_context_client(&mut self, engine: Option<&str>, app_id: &str) -> ClientId {
+        let app = SecurityContextApp {
+            engine: engine.map(str::to_owned),
+            app_id: app_id.to_owned(),
+        };
+        self.add_client_with(true, Some(app))
+    }
+
+    fn add_client_with(
+        &mut self,
+        restricted: bool,
+        security_context_app: Option<SecurityContextApp>,
+    ) -> ClientId {
         let (sock1, sock2) = UnixStream::pair().unwrap();
         self.niri().insert_client(NewClient {
             client: sock1,
-            restricted: false,
+            restricted,
             credentials_unknown: false,
+            security_context_app,
         });
 
         let client = Client::new(sock2);

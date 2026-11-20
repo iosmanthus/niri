@@ -105,7 +105,7 @@ use smithay::wayland::session_lock::{LockSurface, SessionLockManagerState, Sessi
 use smithay::wayland::shell::kde::decoration::KdeDecorationState;
 use smithay::wayland::shell::wlr_layer::{self, Layer, WlrLayerShellState};
 use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
-use smithay::wayland::shell::xdg::XdgShellState;
+use smithay::wayland::shell::xdg::{ToplevelSurface, XdgShellState};
 use smithay::wayland::shm::ShmState;
 #[cfg(test)]
 use smithay::wayland::single_pixel_buffer::SinglePixelBufferState;
@@ -191,7 +191,9 @@ use crate::utils::{
     send_scale_transform, winit_scale, write_png_rgba8, xwayland,
 };
 use crate::window::mapped::MappedId;
-use crate::window::{InitialConfigureState, Mapped, ResolvedWindowRules, Unmapped, WindowRef};
+use crate::window::{
+    app_identity, InitialConfigureState, Mapped, ResolvedWindowRules, Unmapped, WindowRef,
+};
 
 const CLEAR_COLOR_LOCKED: [f32; 4] = [0.3, 0.1, 0.1, 1.];
 
@@ -2587,6 +2589,7 @@ impl Niri {
                         client,
                         restricted: false,
                         credentials_unknown: false,
+                        security_context_app: None,
                     });
                 })
                 .unwrap();
@@ -2789,11 +2792,24 @@ impl Niri {
         niri
     }
 
+    /// Whether `toplevel` opens as a secondary window: a tiled window of its app (see
+    /// [`crate::window::AppIdentity`]) is mapped. Windows that an app opens at once are not
+    /// secondary to each other, since none of them is mapped when the others are configured.
+    pub fn opens_as_secondary(&self, toplevel: &ToplevelSurface) -> bool {
+        let Some(app) = app_identity(toplevel) else {
+            return false;
+        };
+        self.layout.windows().any(|(_, mapped)| {
+            !mapped.is_floating() && app_identity(mapped.toplevel()).as_ref() == Some(&app)
+        })
+    }
+
     pub fn insert_client(&mut self, client: NewClient) {
         let NewClient {
             client,
             restricted,
             credentials_unknown,
+            security_context_app,
         } = client;
 
         let config = self.config.borrow();
@@ -2803,6 +2819,7 @@ impl Niri {
             primary_selection_disabled: config.clipboard.disable_primary,
             restricted,
             credentials_unknown,
+            security_context_app,
         });
 
         if let Err(err) = self.display_handle.insert_client(client, data) {
@@ -7078,6 +7095,18 @@ pub struct NewClient {
     pub client: UnixStream,
     pub restricted: bool,
     pub credentials_unknown: bool,
+    /// The app that the security context the client connected through names, if any.
+    pub security_context_app: Option<SecurityContextApp>,
+}
+
+/// The app a security context names: its sandbox engine and the app id, which is the
+/// engine's own. Only the two together name an app; the engine may be unset. The creator of
+/// the context sets them (Flatpak: engine org.flatpak, the Flatpak app id), and a client
+/// inside the context cannot change them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecurityContextApp {
+    pub engine: Option<String>,
+    pub app_id: String,
 }
 
 pub struct ClientState {
@@ -7088,6 +7117,8 @@ pub struct ClientState {
     pub restricted: bool,
     /// We cannot retrieve this client's socket credentials.
     pub credentials_unknown: bool,
+    /// The app that the security context the client connected through names.
+    pub security_context_app: Option<SecurityContextApp>,
 }
 
 impl ClientData for ClientState {

@@ -37,6 +37,8 @@ window-rule {
     match is-window-cast-target=true
     match is-urgent=true
     match at-startup=true
+    match is-secondary=true
+    match security-context-app-id="^org\\.telegram\\.desktop$"
 
     // Properties that apply once upon window opening.
     default-column-width { proportion 0.75; }
@@ -336,6 +338,43 @@ This is useful for properties like `open-on-output` which you may want to apply 
 window-rule {
     match at-startup=true
     open-on-output "HDMI-A-1"
+}
+```
+
+#### `is-secondary`
+
+Can be `true` or `false`.
+Matches a window that opened while a tiled window of the same app was mapped.
+It is decided when niri sends the initial configure and does not change afterwards.
+
+A client that connected through a security context with an app id (a sandboxed app, such as a Flatpak app) is one app with every client of the same security context sandbox engine and app id, whatever app ids its windows set: the sandbox's processes and its X11 bridge.
+Any other client is one app per window app id, since one X11 bridge serves several X11 apps.
+Floating windows do not count, so a main window that opens after a floating login or splash window is not secondary.
+Windows that an app opens at once are not secondary to each other.
+
+This lets the extra windows of an app float at the size the app asks for, without matching their titles.
+Exclude the apps whose windows are peers, such as browsers: excluded windows keep the default behavior, so their dialogs still float.
+
+```kdl
+// The first window of an app tiles; the windows it opens later float.
+window-rule {
+    match is-secondary=true
+    exclude app-id="^firefox$"
+    open-floating true
+}
+```
+
+#### `security-context-app-id`
+
+A regular expression matched against the app id of the security context that the window's client connected through.
+The creator of the context sets it (Flatpak sets the Flatpak app id), and the app cannot change it.
+The app id is the sandbox engine's own: it matches whatever engine set it.
+Windows of clients that connected without a security context, or without an app id, do not match.
+
+```kdl
+window-rule {
+    match security-context-app-id=r#"^org\.telegram\.desktop$"#
+    open-on-workspace "chat"
 }
 ```
 

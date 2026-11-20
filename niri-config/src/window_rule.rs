@@ -141,6 +141,13 @@ pub struct Match {
     pub is_urgent: Option<bool>,
     #[knuffel(property)]
     pub at_startup: Option<bool>,
+    /// Whether a tiled window of the same app was mapped when this window opened.
+    #[knuffel(property)]
+    pub is_secondary: Option<bool>,
+    /// The app id of the security context that the window's client connected through (the
+    /// sandbox sets it, not the window).
+    #[knuffel(property, str)]
+    pub security_context_app_id: Option<RegexEq>,
 }
 
 #[derive(knuffel::Decode, Debug, Clone, Copy, PartialEq)]

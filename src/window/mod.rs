@@ -8,12 +8,15 @@ use niri_config::{
 };
 use niri_ipc::ColumnDisplay;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
+use smithay::reexports::wayland_server::backend::ClientId;
+use smithay::reexports::wayland_server::Resource as _;
 use smithay::utils::{Logical, Size};
 use smithay::wayland::compositor::with_states;
 use smithay::wayland::shell::xdg::{
     SurfaceCachedState, ToplevelSurface, XdgToplevelSurfaceRoleAttributes,
 };
 
+use crate::niri::{ClientState, SecurityContextApp};
 use crate::utils::with_toplevel_role;
 
 pub mod mapped;
@@ -183,6 +186,49 @@ impl<'a> WindowRef<'a> {
             WindowRef::Mapped(mapped) => mapped.is_window_cast_target(),
         }
     }
+
+    pub fn is_secondary(self) -> bool {
+        match self {
+            WindowRef::Unmapped(unmapped) => unmapped.is_secondary,
+            WindowRef::Mapped(mapped) => mapped.is_secondary(),
+        }
+    }
+}
+
+/// Which app a toplevel belongs to, for the `is-secondary` matcher.
+///
+/// A client that connected through a security context with an app id belongs to the app
+/// that the context's sandbox engine and app id name: all the sandbox's processes and its
+/// X11 bridge, whatever app ids their windows set. Any other client is one app per window
+/// app id, since one X11 bridge serves several X11 apps.
+#[derive(Debug, PartialEq, Eq)]
+pub enum AppIdentity {
+    SecurityContext(SecurityContextApp),
+    Client(ClientId, Option<String>),
+}
+
+/// The app id of the security context that `toplevel`'s client connected through.
+///
+/// Reads only the client's data, so it can run while the toplevel role is locked.
+pub fn security_context_app_id(toplevel: &ToplevelSurface) -> Option<String> {
+    let client = toplevel.wl_surface().client()?;
+    let data = client.get_data::<ClientState>()?;
+    data.security_context_app
+        .as_ref()
+        .map(|app| app.app_id.clone())
+}
+
+/// The app `toplevel` belongs to; `None` once its client is gone.
+pub fn app_identity(toplevel: &ToplevelSurface) -> Option<AppIdentity> {
+    let client = toplevel.wl_surface().client()?;
+    if let Some(app) = client
+        .get_data::<ClientState>()
+        .and_then(|data| data.security_context_app.clone())
+    {
+        return Some(AppIdentity::SecurityContext(app));
+    }
+    let app_id = with_toplevel_role(toplevel, |role| role.app_id.clone());
+    Some(AppIdentity::Client(client.id(), app_id))
 }
 
 impl ResolvedWindowRules {
@@ -418,6 +464,21 @@ fn window_matches(window: WindowRef, role: &XdgToplevelSurfaceRoleAttributes, m:
             .states
             .contains(xdg_toplevel::State::Activated);
         if is_active != pending_activated {
+            return false;
+        }
+    }
+
+    if let Some(is_secondary) = m.is_secondary {
+        if window.is_secondary() != is_secondary {
+            return false;
+        }
+    }
+
+    if let Some(context_app_id_re) = &m.security_context_app_id {
+        let Some(context_app_id) = security_context_app_id(window.toplevel()) else {
+            return false;
+        };
+        if !context_app_id_re.0.is_match(&context_app_id) {
             return false;
         }
     }
