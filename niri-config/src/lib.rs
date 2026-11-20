@@ -1852,6 +1852,8 @@ mod tests {
                             is_window_cast_target: None,
                             is_urgent: None,
                             at_startup: None,
+                            is_secondary: None,
+                            security_context_app_id: None,
                         },
                     ],
                     excludes: [
@@ -1871,6 +1873,8 @@ mod tests {
                             is_window_cast_target: None,
                             is_urgent: None,
                             at_startup: None,
+                            is_secondary: None,
+                            security_context_app_id: None,
                         },
                         Match {
                             app_id: None,
@@ -1886,6 +1890,8 @@ mod tests {
                             is_window_cast_target: None,
                             is_urgent: None,
                             at_startup: None,
+                            is_secondary: None,
+                            security_context_app_id: None,
                         },
                     ],
                     default_column_width: None,

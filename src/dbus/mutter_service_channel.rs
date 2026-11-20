@@ -27,6 +27,7 @@ impl ServiceChannel {
             restricted: false,
             // FIXME: maybe you can get the PID from D-Bus somehow?
             credentials_unknown: true,
+            security_context_app: None,
         };
         if let Err(err) = self.to_niri.send(client) {
             warn!("error sending message to niri: {err:?}");

@@ -57,6 +57,9 @@ pub struct Mapped {
     /// Credentials of the process that created the Wayland connection.
     credentials: Option<Credentials>,
 
+    /// Whether a tiled window of the same app was mapped when this window opened.
+    is_secondary: bool,
+
     /// Pre-commit hook that we have on all mapped toplevel surfaces.
     pre_commit_hook: HookId,
 
@@ -272,13 +275,20 @@ enum RequestSizeOnce {
 }
 
 impl Mapped {
-    pub fn new(window: Window, rules: ResolvedWindowRules, hook: HookId, config: &Config) -> Self {
+    pub fn new(
+        window: Window,
+        rules: ResolvedWindowRules,
+        hook: HookId,
+        is_secondary: bool,
+        config: &Config,
+    ) -> Self {
         let surface = window.wl_surface().expect("no X11 support");
         let credentials = get_credentials_for_surface(&surface);
         let mut rv = Self {
             window,
             id: MappedId::next(),
             credentials,
+            is_secondary,
             pre_commit_hook: hook,
             rules,
             need_to_recompute_rules: false,
@@ -377,6 +387,10 @@ impl Mapped {
 
     pub fn is_floating(&self) -> bool {
         self.is_floating
+    }
+
+    pub fn is_secondary(&self) -> bool {
+        self.is_secondary
     }
 
     pub fn is_window_cast_target(&self) -> bool {

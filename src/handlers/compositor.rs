@@ -84,6 +84,7 @@ impl CompositorHandler for State {
                         window,
                         state,
                         activation_token_data,
+                        is_secondary,
                     } = entry.remove();
 
                     window.on_commit();
@@ -196,7 +197,7 @@ impl CompositorHandler for State {
                     let hook = add_mapped_toplevel_pre_commit_hook(toplevel);
                     let mapped = {
                         let config = self.niri.config.borrow();
-                        Mapped::new(window, rules, hook, &config)
+                        Mapped::new(window, rules, hook, is_secondary, &config)
                     };
                     let window = mapped.window.clone();
 

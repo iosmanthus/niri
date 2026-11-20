@@ -41,7 +41,9 @@ fn set_up_locked_fullscreen() -> (Fixture, ClientId, Arc<LockedPointerData>) {
 
 /// Maps an overlay layer surface under the pointer, where notification popups show up.
 fn map_overlay_under_pointer(f: &mut Fixture, id: ClientId, kb: KeyboardInteractivity) {
-    let layer = f.client(id).create_layer(None, Layer::Overlay, "notifications");
+    let layer = f
+        .client(id)
+        .create_layer(None, Layer::Overlay, "notifications");
     let surface = layer.surface.clone();
     layer.set_configure_props(LayerConfigureProps {
         anchor: Some(Anchor::Bottom | Anchor::Right),
@@ -63,7 +65,10 @@ fn map_overlay_under_pointer(f: &mut Fixture, id: ClientId, kb: KeyboardInteract
 
     let niri = f.niri();
     let under = niri.contents_under(Point::from((1800., 1000.)));
-    assert!(under.layer.is_some(), "the layer surface is not under the pointer");
+    assert!(
+        under.layer.is_some(),
+        "the layer surface is not under the pointer"
+    );
 }
 
 #[test]

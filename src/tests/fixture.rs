@@ -10,7 +10,7 @@ use smithay::output::Output;
 
 use super::client::{Client, ClientId};
 use super::server::Server;
-use crate::niri::{NewClient, Niri};
+use crate::niri::{NewClient, Niri, SecurityContextApp};
 
 pub struct Fixture {
     pub event_loop: EventLoop<'static, State>,
@@ -98,15 +98,35 @@ impl Fixture {
     }
 
     pub fn add_client(&mut self) -> ClientId {
-        self.add_client_with_peer(None)
+        self.add_client_with(false, None, None)
     }
 
     pub fn add_client_with_peer(&mut self, peer: Option<crate::selinux::PeerLabel>) -> ClientId {
+        self.add_client_with(false, None, peer)
+    }
+
+    /// A client that connected through a security context of sandbox engine `engine`
+    /// with `app_id`, as Flatpak (engine org.flatpak) connects its apps.
+    pub fn add_security_context_client(&mut self, engine: Option<&str>, app_id: &str) -> ClientId {
+        let app = SecurityContextApp {
+            engine: engine.map(str::to_owned),
+            app_id: app_id.to_owned(),
+        };
+        self.add_client_with(true, Some(app), None)
+    }
+
+    fn add_client_with(
+        &mut self,
+        restricted: bool,
+        security_context_app: Option<SecurityContextApp>,
+        peer: Option<crate::selinux::PeerLabel>,
+    ) -> ClientId {
         let (sock1, sock2) = UnixStream::pair().unwrap();
         let client = NewClient {
             client: sock1,
-            restricted: false,
+            restricted,
             credentials_unknown: false,
+            security_context_app,
         };
         if let Some(peer) = peer {
             self.niri().insert_test_client(client, peer);
