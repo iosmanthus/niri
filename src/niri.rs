@@ -2432,10 +2432,13 @@ impl Niri {
                     .can_view_decoration_globals
             },
         );
-        let layer_shell_state = WlrLayerShellState::new_with_filter::<State, _>(
-            &display_handle,
-            client_is_unrestricted,
-        );
+        let layer_shell_state =
+            WlrLayerShellState::new_with_filter::<State, _>(&display_handle, |client| {
+                client
+                    .get_data::<ClientState>()
+                    .unwrap()
+                    .can_use_layer_shell
+            });
         let session_lock_state =
             SessionLockManagerState::new::<State, _>(&display_handle, client_is_unrestricted);
         let shm_state = ShmState::new::<State>(
@@ -2845,6 +2848,12 @@ impl Niri {
         } = client;
 
         let config = self.config.borrow();
+        let can_use_layer_shell = !restricted
+            || security_context_app.as_ref().is_some_and(|app| {
+                config.sandbox_layer_shell.iter().any(|allowed| {
+                    allowed.sandbox_engine == app.engine && allowed.app_id == app.app_id
+                })
+            });
         let data = Arc::new(ClientState {
             compositor_state: Default::default(),
             can_view_decoration_globals: config.prefer_no_csd,
@@ -2854,6 +2863,7 @@ impl Niri {
             peer_label,
             connection_id: self.next_connection_id,
             security_context_app,
+            can_use_layer_shell,
         });
 
         if let Err(err) = self.display_handle.insert_client(client, data) {
@@ -3546,13 +3556,17 @@ impl Niri {
         }
 
         let layers = layer_map_for_output(output);
-        let layer_surface_under = |layer, popup| {
+        let layer_surface_under = |layer, popup, stack: Option<LayerStack>| {
             layers
                 .layers_on(layer)
                 .rev()
                 .find_map(|layer_surface| {
                     let mapped = self.mapped_layer_surfaces.get(layer_surface)?;
                     if mapped.place_within_backdrop() {
+                        return None;
+                    }
+
+                    if stack.is_some_and(|s| s != LayerStack::of(layer_surface.wl_surface())) {
                         return None;
                     }
 
@@ -3587,8 +3601,15 @@ impl Niri {
                 .map(|(s, l)| (Some(s), (None, Some(l.clone()))))
         };
 
-        let layer_toplevel_under = |layer| layer_surface_under(layer, false);
-        let layer_popup_under = |layer| layer_surface_under(layer, true);
+        let layer_toplevel_under = |layer| layer_surface_under(layer, false, None);
+        let layer_popup_under = |layer| layer_surface_under(layer, true, None);
+        // Overlay and top: the host's popups and surfaces, then a sandbox's, as in render().
+        let stacked_layer_under = |layer| {
+            layer_surface_under(layer, true, Some(LayerStack::Host))
+                .or_else(|| layer_surface_under(layer, false, Some(LayerStack::Host)))
+                .or_else(|| layer_surface_under(layer, true, Some(LayerStack::Sandbox)))
+                .or_else(|| layer_surface_under(layer, false, Some(LayerStack::Sandbox)))
+        };
 
         let mapped_hit_data = |(mapped, hit): (&Mapped, HitType)| {
             let window = &mapped.window;
@@ -3621,8 +3642,7 @@ impl Niri {
 
         let mon = self.layout.monitor_for_output(output).unwrap();
 
-        let mut under =
-            layer_popup_under(Layer::Overlay).or_else(|| layer_toplevel_under(Layer::Overlay));
+        let mut under = stacked_layer_under(Layer::Overlay);
 
         let is_overview_open = self.layout.is_overview_open();
 
@@ -3632,8 +3652,7 @@ impl Niri {
             under = under
                 .or_else(interactive_moved_window_under)
                 .or_else(window_under)
-                .or_else(|| layer_popup_under(Layer::Top))
-                .or_else(|| layer_toplevel_under(Layer::Top))
+                .or_else(|| stacked_layer_under(Layer::Top))
                 .or_else(|| layer_popup_under(Layer::Bottom))
                 .or_else(|| layer_popup_under(Layer::Background))
                 .or_else(|| layer_toplevel_under(Layer::Bottom))
@@ -3644,9 +3663,7 @@ impl Niri {
                 return rv;
             }
 
-            under = under
-                .or_else(|| layer_popup_under(Layer::Top))
-                .or_else(|| layer_toplevel_under(Layer::Top));
+            under = under.or_else(|| stacked_layer_under(Layer::Top));
 
             under = under.or_else(interactive_moved_window_under);
 
@@ -4522,7 +4539,7 @@ impl Niri {
         // We use macros instead of closures to avoid borrowing issues (renderer and push() go
         // into different functions).
         macro_rules! push_popups_from_layer {
-            ($layer:expr, $ns:expr, $xray_pos:expr, $backdrop:expr, $push:expr) => {{
+            ($layer:expr, $ns:expr, $xray_pos:expr, $backdrop:expr, $stack:expr, $push:expr) => {{
                 self.render_layer_popups(
                     ctx.r(),
                     $ns,
@@ -4530,7 +4547,21 @@ impl Niri {
                     $layer,
                     $xray_pos,
                     $backdrop,
+                    $stack,
                     $push,
+                );
+            }};
+            ($layer:expr, $ns:expr, $xray_pos:expr, $backdrop:expr, $push:expr) => {{
+                push_popups_from_layer!($layer, $ns, $xray_pos, $backdrop, None, $push);
+            }};
+            ($layer:expr, stack $stack:expr) => {{
+                push_popups_from_layer!(
+                    $layer,
+                    None,
+                    XrayPos::default(),
+                    false,
+                    Some($stack),
+                    &mut |elem| push(elem.into())
                 );
             }};
             ($layer:expr, true) => {{
@@ -4548,7 +4579,7 @@ impl Niri {
             }};
         }
         macro_rules! push_normal_from_layer {
-            ($layer:expr, $ns:expr, $xray_pos:expr, $backdrop:expr, $push:expr) => {{
+            ($layer:expr, $ns:expr, $xray_pos:expr, $backdrop:expr, $stack:expr, $push:expr) => {{
                 self.render_layer_normal(
                     ctx.r(),
                     $ns,
@@ -4556,7 +4587,21 @@ impl Niri {
                     $layer,
                     $xray_pos,
                     $backdrop,
+                    $stack,
                     $push,
+                );
+            }};
+            ($layer:expr, $ns:expr, $xray_pos:expr, $backdrop:expr, $push:expr) => {{
+                push_normal_from_layer!($layer, $ns, $xray_pos, $backdrop, None, $push);
+            }};
+            ($layer:expr, stack $stack:expr) => {{
+                push_normal_from_layer!(
+                    $layer,
+                    None,
+                    XrayPos::default(),
+                    false,
+                    Some($stack),
+                    &mut |elem| push(elem.into())
                 );
             }};
             ($layer:expr, true) => {{
@@ -4574,9 +4619,11 @@ impl Niri {
             }};
         }
 
-        // The overlay layer elements go next.
-        push_popups_from_layer!(Layer::Overlay);
-        push_normal_from_layer!(Layer::Overlay);
+        // The overlay layer elements go next: the host's, then a sandbox's (LayerStack).
+        for stack in [LayerStack::Host, LayerStack::Sandbox] {
+            push_popups_from_layer!(Layer::Overlay, stack stack);
+            push_normal_from_layer!(Layer::Overlay, stack stack);
+        }
 
         // When rendering above the top layer, we put the regular monitor elements first.
         // Otherwise, we will render all layer-shell pop-ups and the top layer on top.
@@ -4588,8 +4635,10 @@ impl Niri {
 
             mon.render_workspaces(ctx.r(), focus_ring, &mut |elem| push(elem.into()));
 
-            push_popups_from_layer!(Layer::Top);
-            push_normal_from_layer!(Layer::Top);
+            for stack in [LayerStack::Host, LayerStack::Sandbox] {
+                push_popups_from_layer!(Layer::Top, stack stack);
+                push_normal_from_layer!(Layer::Top, stack stack);
+            }
 
             push_popups_from_layer!(Layer::Bottom);
             push_popups_from_layer!(Layer::Background);
@@ -4601,8 +4650,10 @@ impl Niri {
                 push(ws.render_background().into());
             }
         } else {
-            push_popups_from_layer!(Layer::Top);
-            push_normal_from_layer!(Layer::Top);
+            for stack in [LayerStack::Host, LayerStack::Sandbox] {
+                push_popups_from_layer!(Layer::Top, stack stack);
+                push_normal_from_layer!(Layer::Top, stack stack);
+            }
 
             self.layout
                 .render_interactive_move_for_output(ctx.r(), output, &mut |elem| push(elem.into()));
@@ -4689,6 +4740,7 @@ impl Niri {
                 Layer::Background,
                 XrayPos::default(),
                 false,
+                None,
                 &mut |elem| elements.push(elem.into()),
             );
             // Avoid unused capacity remaining forever.
@@ -4706,6 +4758,7 @@ impl Niri {
                 Layer::Background,
                 XrayPos::default(),
                 true,
+                None,
                 &mut |elem| elements.push(elem.into()),
             );
             // Avoid unused capacity remaining forever.
@@ -4732,7 +4785,7 @@ impl Niri {
         let layer_map = layer_map_for_output(output);
         for for_backdrop in [false, true] {
             for (mapped, _geo) in
-                self.layers_in_render_order(&layer_map, Layer::Background, for_backdrop)
+                self.layers_in_render_order(&layer_map, Layer::Background, for_backdrop, None)
             {
                 if mapped.rules().block_out_from.is_some() {
                     return true;
@@ -4742,17 +4795,23 @@ impl Niri {
         false
     }
 
+    /// The mapped surfaces on `layer`, top first; with `stack`, only the host's or a sandbox's.
     fn layers_in_render_order<'a>(
         &'a self,
         layer_map: &'a LayerMap,
         layer: Layer,
         for_backdrop: bool,
+        stack: Option<LayerStack>,
     ) -> impl Iterator<Item = (&'a MappedLayer, Rectangle<i32, Logical>)> {
         // LayerMap returns layers in reverse stacking order.
         layer_map.layers_on(layer).rev().filter_map(move |surface| {
             let mapped = self.mapped_layer_surfaces.get(surface)?;
 
             if for_backdrop != mapped.place_within_backdrop() {
+                return None;
+            }
+
+            if stack.is_some_and(|stack| stack != LayerStack::of(surface.wl_surface())) {
                 return None;
             }
 
@@ -4770,9 +4829,10 @@ impl Niri {
         layer: Layer,
         xray_pos: XrayPos,
         for_backdrop: bool,
+        stack: Option<LayerStack>,
         push: &mut dyn FnMut(LayerSurfaceRenderElement<R>),
     ) {
-        for (mapped, geo) in self.layers_in_render_order(layer_map, layer, for_backdrop) {
+        for (mapped, geo) in self.layers_in_render_order(layer_map, layer, for_backdrop, stack) {
             let loc = geo.loc.to_f64();
             let xray_pos = xray_pos.offset(loc);
             mapped.render_normal(ctx.r(), ns, loc, xray_pos, push);
@@ -4788,9 +4848,10 @@ impl Niri {
         layer: Layer,
         xray_pos: XrayPos,
         for_backdrop: bool,
+        stack: Option<LayerStack>,
         push: &mut dyn FnMut(LayerSurfaceRenderElement<R>),
     ) {
-        for (mapped, geo) in self.layers_in_render_order(layer_map, layer, for_backdrop) {
+        for (mapped, geo) in self.layers_in_render_order(layer_map, layer, for_backdrop, stack) {
             let loc = geo.loc.to_f64();
             let xray_pos = xray_pos.offset(loc);
             mapped.render_popups(ctx.r(), ns, loc, xray_pos, push);
@@ -7242,6 +7303,35 @@ pub struct ClientState {
     connection_id: u64,
     /// The app that the security context the client connected through names.
     pub security_context_app: Option<SecurityContextApp>,
+    /// Whether the client may bind wlr-layer-shell: every unrestricted client, and the clients
+    /// of a sandboxed app that the config names in `sandbox-layer-shell`. Decided when the
+    /// client connects.
+    pub can_use_layer_shell: bool,
+}
+
+/// Whose layer surfaces: the host's, or a sandboxed app's (a restricted client that
+/// `sandbox-layer-shell` lets use wlr-layer-shell). On each layer, a sandbox's surfaces and their
+/// popups stack below the host's, so that a sandboxed app cannot cover the host's own overlays
+/// (dialogs, notifications, launchers).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayerStack {
+    Host,
+    Sandbox,
+}
+
+impl LayerStack {
+    /// The stack of the layer surface `surface`, by the client that made it.
+    pub fn of(surface: &WlSurface) -> Self {
+        let restricted = surface
+            .client()
+            .and_then(|client| client.get_data::<ClientState>().map(|data| data.restricted))
+            .unwrap_or(false);
+        if restricted {
+            Self::Sandbox
+        } else {
+            Self::Host
+        }
+    }
 }
 
 impl ClientData for ClientState {
