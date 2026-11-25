@@ -270,6 +270,25 @@ xwayland-satellite {
 }
 ```
 
+### `sandbox-layer-shell`
+
+Lets a sandboxed app use the wlr-layer-shell protocol, for example so that an X11 app inside a Flatpak sandbox can place its notification windows through xwayland-satellite.
+
+A sandboxed app is the app that a security context names: its clients connect through a security context with a sandbox engine and an app id (Flatpak sets engine `org.flatpak` and the Flatpak app id).
+Such clients are restricted and do not see layer-shell, unless a `sandbox-layer-shell` entry names their engine and app id exactly.
+Each entry names one app; there can be many entries.
+The entries apply to clients when they connect.
+
+Within the protocol, a sandboxed app is limited:
+
+- Its layer surfaces and their popups stack below the host's on the same layer, so that it cannot cover the host's own overlays such as dialogs and notifications.
+- A layer surface that asks for exclusive keyboard interactivity or an exclusive zone is closed.
+- A layer surface with on-demand keyboard interactivity gets the keyboard when it is clicked, not when it maps.
+
+```kdl
+sandbox-layer-shell sandbox-engine="org.flatpak" app-id="cn.feishu.Feishu"
+```
+
 ### `clipboard`
 
 <sup>Since: 25.02</sup>

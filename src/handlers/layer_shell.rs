@@ -9,7 +9,7 @@ use smithay::wayland::shell::wlr_layer::{
 use smithay::wayland::shell::xdg::PopupSurface;
 
 use crate::layer::{MappedLayer, ResolvedLayerRules};
-use crate::niri::State;
+use crate::niri::{LayerStack, State};
 use crate::utils::{is_mapped, output_size, send_scale_transform};
 
 impl WlrLayerShellHandler for State {
@@ -102,6 +102,37 @@ impl State {
 
         let mut map = layer_map_for_output(&output);
 
+        // A sandbox (sandbox-layer-shell) may not take the keyboard exclusively nor reserve an
+        // exclusive zone: such a surface is closed before it takes effect.
+        if LayerStack::of(surface) == LayerStack::Sandbox {
+            let layer = map
+                .layer_for_surface(surface, WindowSurfaceType::TOPLEVEL)
+                .unwrap()
+                .clone();
+            let state = layer.cached_state();
+            let exclusive_keyboard =
+                state.keyboard_interactivity == wlr_layer::KeyboardInteractivity::Exclusive;
+            let exclusive_zone =
+                matches!(state.exclusive_zone, wlr_layer::ExclusiveZone::Exclusive(_));
+            if exclusive_keyboard || exclusive_zone {
+                warn!(
+                    "closing a sandboxed layer surface that asks for exclusive {}",
+                    if exclusive_keyboard {
+                        "keyboard"
+                    } else {
+                        "zone"
+                    }
+                );
+                map.unmap_layer(&layer);
+                drop(map);
+                self.niri.mapped_layer_surfaces.remove(&layer);
+                self.niri.unmapped_layer_surfaces.remove(surface);
+                layer.layer_surface().send_close();
+                self.niri.output_resized(&output);
+                return true;
+            }
+        }
+
         // Arrange the layers before sending the initial configure to respect any size the
         // client may have sent.
         map.arrange();
@@ -170,9 +201,11 @@ impl State {
             //    update_keyboard_focus(), so we don't need to check for that here.
             //
             // https://github.com/niri-wm/niri/issues/641
+            //
+            // A sandbox's surface gets the keyboard only when clicked, never by mapping.
             let on_demand = layer.cached_state().keyboard_interactivity
                 == wlr_layer::KeyboardInteractivity::OnDemand;
-            if was_unmapped && on_demand {
+            if was_unmapped && on_demand && LayerStack::of(surface) == LayerStack::Host {
                 // I guess it'd make sense to check that no higher-layer on-demand surface
                 // has focus, but Smithay's Layer doesn't implement Ord so this would be a
                 // little annoying.

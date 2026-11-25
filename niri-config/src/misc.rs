@@ -14,6 +14,18 @@ pub struct SpawnShAtStartup {
     pub command: String,
 }
 
+/// A sandboxed app that may use wlr-layer-shell: the app that a security context names, by its
+/// sandbox engine and app id (Flatpak: engine `org.flatpak`, the Flatpak app id). Its layer
+/// surfaces stay below the host's on the same layer, cannot take the keyboard exclusively, and
+/// cannot reserve an exclusive zone.
+#[derive(knuffel::Decode, Debug, Clone, PartialEq, Eq)]
+pub struct SandboxLayerShell {
+    #[knuffel(property)]
+    pub sandbox_engine: Option<String>,
+    #[knuffel(property)]
+    pub app_id: String,
+}
+
 #[derive(Debug, PartialEq)]
 pub struct Cursor {
     pub xcursor_theme: String,

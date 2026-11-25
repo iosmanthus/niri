@@ -92,6 +92,7 @@ pub struct Config {
     pub debug: Debug,
     pub workspaces: Vec<Workspace>,
     pub recent_windows: RecentWindows,
+    pub sandbox_layer_shell: Vec<SandboxLayerShell>,
 }
 
 #[derive(Debug, Clone)]
@@ -169,6 +170,7 @@ where
                     | "window-rule"
                     | "layer-rule"
                     | "workspace"
+                    | "sandbox-layer-shell"
                     | "include"
             ) && !seen.insert(name)
             {
@@ -218,6 +220,7 @@ where
                 "window-rule" => m_push!(window_rules),
                 "layer-rule" => m_push!(layer_rules),
                 "workspace" => m_push!(workspaces),
+                "sandbox-layer-shell" => m_push!(sandbox_layer_shell),
 
                 // Single-part sections.
                 "binds" => {
@@ -2435,6 +2438,7 @@ mod tests {
                     },
                 ],
             },
+            sandbox_layer_shell: [],
         }
         "#);
     }
