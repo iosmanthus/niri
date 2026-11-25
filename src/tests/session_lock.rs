@@ -56,7 +56,10 @@ fn p13_first_and_dead_lock_admission_preserve_state_and_emit_user_avc() {
         let mut fixture = Fixture::new();
         fixture.niri().protect_locks_for_test();
         let ordinary = fixture.add_client_with_peer(Some(known("unconfined_t")));
-        let unknown = fixture.add_client_with_peer(None);
+        // An explicit unknown label: without one, the fixture asks the kernel for the
+        // socket's peer label, which is known on a host with SELinux enabled.
+        let unknown =
+            fixture.add_client_with_peer(Some(PeerLabel::Unknown(UnknownReason::QueryFailed)));
         assert_eq!(request(&mut fixture, ordinary), LockEvent::Finished);
         assert_eq!(request(&mut fixture, unknown), LockEvent::Finished);
         assert!(matches!(fixture.niri().lock_state, LockState::Unlocked));
