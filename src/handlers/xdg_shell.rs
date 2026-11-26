@@ -421,23 +421,26 @@ impl XdgShellHandler for State {
         let keyboard = seat.get_keyboard().unwrap();
         let pointer = seat.get_pointer().unwrap();
 
+        // Layer surfaces that can't receive keyboard focus get no keyboard grab: without this
+        // check, popups don't work properly in Waybar (GTK 3).
+        let can_receive_keyboard_focus = self
+            .niri
+            .layout
+            .active_output()
+            .and_then(|output| {
+                layer_map_for_output(output)
+                    .layer_for_surface(&root, WindowSurfaceType::TOPLEVEL)
+                    .map(|layer_surface| layer_surface.can_receive_keyboard_focus())
+            })
+            .unwrap_or(true);
+
         // Smithay cannot do overlapping grabs, so if we have an IME keyboard grab, don't overwrite
         // it with a popup keyboard grab. This makes the popup menu work in Telegram while an IME
-        // is active (otherwise it hits the grab mismatch check below).
-        //
-        // The second check is for layer surfaces that can't receive keyboard focus, without it
-        // popups don't work properly in Waybar (GTK 3).
-        let can_receive_keyboard_focus = !self.niri.seat.input_method().keyboard_grabbed()
-            && self
-                .niri
-                .layout
-                .active_output()
-                .and_then(|output| {
-                    layer_map_for_output(output)
-                        .layer_for_surface(&root, WindowSurfaceType::TOPLEVEL)
-                        .map(|layer_surface| layer_surface.can_receive_keyboard_focus())
-                })
-                .unwrap_or(true);
+        // is active (otherwise it hits the grab mismatch check below). The popup still gets the
+        // keyboard focus (see refresh_popup_grab()): the IME grab sends keys to the focus, and
+        // text-input follows it, so an input field in the popup can use the IME.
+        let ime_has_keyboard_grab = self.niri.seat.input_method().keyboard_grabbed();
+        let install_keyboard_grab = can_receive_keyboard_focus && !ime_has_keyboard_grab;
 
         let keyboard_grab_mismatches = keyboard.is_grabbed()
             && !(keyboard.has_grab(serial)
@@ -445,22 +448,24 @@ impl XdgShellHandler for State {
         let pointer_grab_mismatches = pointer.is_grabbed()
             && !(pointer.has_grab(serial)
                 || grab.previous_serial().is_none_or(|s| pointer.has_grab(s)));
-        if (can_receive_keyboard_focus && keyboard_grab_mismatches) || pointer_grab_mismatches {
+        if (install_keyboard_grab && keyboard_grab_mismatches) || pointer_grab_mismatches {
             trace!("ignoring popup grab because of current grab mismatch");
             grab.ungrab(PopupUngrabStrategy::All);
             return;
         }
 
         trace!("new grab for root {:?}", root);
-        if can_receive_keyboard_focus {
+        if install_keyboard_grab {
             keyboard.set_grab(self, PopupKeyboardGrab::new(&grab), serial);
         }
         pointer.set_grab(self, PopupPointerGrab::new(&grab), serial, Focus::Keep);
         self.niri.popup_grab = Some(PopupGrabState {
             root,
             grab,
-            has_keyboard_grab: can_receive_keyboard_focus,
+            has_keyboard_grab: install_keyboard_grab,
+            focuses_popup: can_receive_keyboard_focus && !install_keyboard_grab,
         });
+        self.refresh_popup_grab();
     }
 
     fn maximize_request(&mut self, toplevel: ToplevelSurface) {

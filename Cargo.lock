@@ -2255,6 +2255,7 @@ dependencies = [
  "tracy-client",
  "wayland-backend",
  "wayland-client",
+ "wayland-protocols-misc",
  "wayland-scanner",
  "wayland-server",
  "xcursor",
