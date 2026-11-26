@@ -21,6 +21,8 @@ use smithay::reexports::wayland_protocols::ext::session_lock::v1::client::{
 };
 use smithay::reexports::wayland_protocols::wp::viewporter::client::wp_viewport::WpViewport;
 use smithay::reexports::wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
+use smithay::reexports::wayland_protocols::xdg::shell::client::xdg_popup::{self, XdgPopup};
+use smithay::reexports::wayland_protocols::xdg::shell::client::xdg_positioner::XdgPositioner;
 use smithay::reexports::wayland_protocols::xdg::shell::client::xdg_surface::{self, XdgSurface};
 use smithay::reexports::wayland_protocols::xdg::shell::client::xdg_toplevel::{self, XdgToplevel};
 use smithay::reexports::wayland_protocols::xdg::shell::client::xdg_wm_base::{self, XdgWmBase};
@@ -33,6 +35,9 @@ use smithay::reexports::wayland_protocols_wlr::layer_shell::v1::client::zwlr_lay
 use smithay::reexports::wayland_protocols_wlr::virtual_pointer::v1::client::zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1;
 use smithay::reexports::wayland_protocols_wlr::virtual_pointer::v1::client::zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1;
 use wayland_backend::client::Backend;
+use wayland_protocols_misc::zwp_input_method_v2::client::zwp_input_method_keyboard_grab_v2::ZwpInputMethodKeyboardGrabV2;
+use wayland_protocols_misc::zwp_input_method_v2::client::zwp_input_method_manager_v2::ZwpInputMethodManagerV2;
+use wayland_protocols_misc::zwp_input_method_v2::client::zwp_input_method_v2::ZwpInputMethodV2;
 use wayland_client::globals::Global;
 use wayland_client::protocol::wl_buffer::{self, WlBuffer};
 use wayland_client::protocol::wl_callback::{self, WlCallback};
@@ -75,9 +80,24 @@ pub struct State {
     pub pointer_constraints: Option<ZwpPointerConstraintsV1>,
     pub lock_manager: Option<ExtSessionLockManagerV1>,
     pub lock_events: Vec<(ExtSessionLockV1, LockEvent)>,
+    pub input_method_manager: Option<ZwpInputMethodManagerV2>,
 
     pub windows: Vec<Window>,
     pub layers: Vec<LayerSurface>,
+    pub popups: Vec<Popup>,
+    pub input_method_grabs: Vec<(ZwpInputMethodV2, ZwpInputMethodKeyboardGrabV2)>,
+}
+
+pub struct Popup {
+    pub qh: QueueHandle<State>,
+    pub spbm: WpSinglePixelBufferManagerV1,
+
+    pub surface: WlSurface,
+    pub xdg_surface: XdgSurface,
+    pub xdg_popup: XdgPopup,
+    pub viewport: WpViewport,
+    pub configure_serials: Vec<u32>,
+    pub done: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -250,6 +270,24 @@ impl fmt::Display for Configure {
     }
 }
 
+impl Popup {
+    /// Maps the popup: acks its last configure and commits a buffer.
+    pub fn map(&self) {
+        let serial = *self.configure_serials.last().unwrap();
+        self.xdg_surface.ack_configure(serial);
+        let buffer = self.spbm.create_u32_rgba_buffer(0, 0, 0, 0, &self.qh, ());
+        self.surface.attach(Some(&buffer), 0, 0);
+        self.viewport.set_destination(100, 100);
+        self.surface.commit();
+    }
+
+    pub fn destroy(&self) {
+        self.xdg_popup.destroy();
+        self.xdg_surface.destroy();
+        self.surface.destroy();
+    }
+}
+
 impl fmt::Display for LayerConfigure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "size: {} × {}", self.size.0, self.size.1)?;
@@ -290,8 +328,11 @@ impl Client {
             pointer_constraints: None,
             lock_manager: None,
             lock_events: Vec::new(),
+            input_method_manager: None,
             windows: Vec::new(),
             layers: Vec::new(),
+            popups: Vec::new(),
+            input_method_grabs: Vec::new(),
         };
 
         Self {
@@ -401,6 +442,79 @@ impl State {
             .iter_mut()
             .find(|w| w.surface == *surface)
             .unwrap()
+    }
+
+    /// Creates a 100 × 100 popup of the window or popup `parent`; with `grab`, it asks for an
+    /// explicit grab before its initial commit. Commits it unmapped.
+    pub fn create_popup(&mut self, parent: &WlSurface, grab: bool) -> &mut Popup {
+        let parent = self
+            .windows
+            .iter()
+            .find(|w| w.surface == *parent)
+            .map(|w| w.xdg_surface.clone())
+            .or_else(|| {
+                self.popups
+                    .iter()
+                    .find(|p| p.surface == *parent)
+                    .map(|p| p.xdg_surface.clone())
+            })
+            .unwrap();
+        let surface = self.create_surface();
+
+        let xdg_wm_base = self.xdg_wm_base.as_ref().unwrap();
+        let viewporter = self.viewporter.as_ref().unwrap();
+
+        let positioner = xdg_wm_base.create_positioner(&self.qh, ());
+        positioner.set_size(100, 100);
+        positioner.set_anchor_rect(0, 0, 10, 10);
+        let xdg_surface = xdg_wm_base.get_xdg_surface(&surface, &self.qh, ());
+        let xdg_popup = xdg_surface.get_popup(Some(&parent), &positioner, &self.qh, ());
+        positioner.destroy();
+        let viewport = viewporter.get_viewport(&surface, &self.qh, ());
+
+        if grab {
+            let seat = self.seats.keys().next().unwrap();
+            xdg_popup.grab(seat, 0);
+        }
+        surface.commit();
+
+        let popup = Popup {
+            qh: self.qh.clone(),
+            spbm: self.spbm.clone().unwrap(),
+            surface,
+            xdg_surface,
+            xdg_popup,
+            viewport,
+            configure_serials: Vec::new(),
+            done: false,
+        };
+        self.popups.push(popup);
+        self.popups.last_mut().unwrap()
+    }
+
+    pub fn popup(&mut self, surface: &WlSurface) -> &mut Popup {
+        self.popups
+            .iter_mut()
+            .find(|p| p.surface == *surface)
+            .unwrap()
+    }
+
+    /// Becomes an input method (zwp_input_method_v2) that grabs the keyboard.
+    pub fn grab_keyboard_as_input_method(&mut self) {
+        let manager = self.input_method_manager.as_ref().unwrap();
+        let seat = self.seats.keys().next().unwrap();
+        let input_method = manager.get_input_method(seat, &self.qh, ());
+        let grab = input_method.grab_keyboard(&self.qh, ());
+        self.input_method_grabs.push((input_method, grab));
+    }
+
+    /// The surface that has the keyboard focus of this client.
+    pub fn keyboard_focus(&self) -> Option<WlSurface> {
+        self.seats
+            .values()
+            .next()
+            .and_then(|seat| seat.keyboard.as_ref())
+            .and_then(|keyboard| keyboard.surface.clone())
     }
 
     pub fn create_layer(
@@ -702,6 +816,9 @@ impl Dispatch<WlRegistry, ()> for State {
                 } else if interface == ZwpPointerConstraintsV1::interface().name {
                     let version = min(version, ZwpPointerConstraintsV1::interface().version);
                     state.pointer_constraints = Some(registry.bind(name, version, qh, ()));
+                } else if interface == ZwpInputMethodManagerV2::interface().name {
+                    let version = min(version, ZwpInputMethodManagerV2::interface().version);
+                    state.input_method_manager = Some(registry.bind(name, version, qh, ()));
                 }
 
                 let global = Global {
@@ -937,6 +1054,14 @@ impl Dispatch<XdgSurface, ()> for State {
     ) {
         match event {
             xdg_surface::Event::Configure { serial } => {
+                if let Some(popup) = state
+                    .popups
+                    .iter_mut()
+                    .find(|p| p.xdg_surface == *xdg_surface)
+                {
+                    popup.configure_serials.push(serial);
+                    return;
+                }
                 let window = state
                     .windows
                     .iter_mut()
@@ -1137,5 +1262,74 @@ impl Dispatch<ExtSessionLockV1, ()> for State {
             _ => unreachable!(),
         };
         state.lock_events.push((lock.clone(), event));
+    }
+}
+
+impl Dispatch<XdgPositioner, ()> for State {
+    fn event(
+        _state: &mut Self,
+        _proxy: &XdgPositioner,
+        _event: <XdgPositioner as wayland_client::Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<XdgPopup, ()> for State {
+    fn event(
+        state: &mut Self,
+        xdg_popup: &XdgPopup,
+        event: <XdgPopup as wayland_client::Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+        match event {
+            xdg_popup::Event::Configure { .. } | xdg_popup::Event::Repositioned { .. } => (),
+            xdg_popup::Event::PopupDone => {
+                if let Some(popup) = state.popups.iter_mut().find(|p| p.xdg_popup == *xdg_popup) {
+                    popup.done = true;
+                }
+            }
+            _ => unreachable!(),
+        }
+    }
+}
+
+impl Dispatch<ZwpInputMethodManagerV2, ()> for State {
+    fn event(
+        _state: &mut Self,
+        _proxy: &ZwpInputMethodManagerV2,
+        _event: <ZwpInputMethodManagerV2 as wayland_client::Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<ZwpInputMethodV2, ()> for State {
+    fn event(
+        _state: &mut Self,
+        _proxy: &ZwpInputMethodV2,
+        _event: <ZwpInputMethodV2 as wayland_client::Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<ZwpInputMethodKeyboardGrabV2, ()> for State {
+    fn event(
+        _state: &mut Self,
+        _proxy: &ZwpInputMethodKeyboardGrabV2,
+        _event: <ZwpInputMethodKeyboardGrabV2 as wayland_client::Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
     }
 }

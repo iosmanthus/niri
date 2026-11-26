@@ -540,6 +540,9 @@ pub struct PopupGrabState {
     pub root: WlSurface,
     pub grab: PopupGrab<State>,
     pub has_keyboard_grab: bool,
+    /// The grab has no keyboard grab because an IME holds the keyboard grab, and the keyboard
+    /// focus goes to its topmost popup instead (refresh_popup_grab()).
+    pub focuses_popup: bool,
 }
 
 // The surfaces here are always toplevel surfaces focused as far as niri's logic is concerned, even
@@ -1248,9 +1251,28 @@ impl State {
     }
 
     pub fn refresh_popup_grab(&mut self) {
-        if let Some(grab) = &mut self.niri.popup_grab {
-            if grab.grab.has_ended() {
-                self.niri.popup_grab = None;
+        let Some(grab) = &mut self.niri.popup_grab else {
+            return;
+        };
+
+        let keyboard = self.niri.seat.get_keyboard().unwrap();
+        if grab.grab.has_ended() {
+            let focuses_popup = grab.focuses_popup;
+            self.niri.popup_grab = None;
+
+            // Give the keyboard focus back to what niri's focus logic chose.
+            if focuses_popup {
+                let focus = self.niri.keyboard_focus.clone().into_surface();
+                if keyboard.current_focus() != focus {
+                    keyboard.set_focus(self, focus, SERIAL_COUNTER.next_serial());
+                }
+            }
+        } else if grab.focuses_popup {
+            // Without a popup keyboard grab of its own (an IME holds the keyboard grab), the
+            // keyboard focus follows the topmost popup of the grab here.
+            let popup = grab.grab.current_grab();
+            if popup.is_some() && keyboard.current_focus() != popup {
+                keyboard.set_focus(self, popup, SERIAL_COUNTER.next_serial());
             }
         }
     }
@@ -1451,7 +1473,9 @@ impl State {
             }
 
             if let Some(grab) = self.niri.popup_grab.as_mut() {
-                if grab.has_keyboard_grab && Some(&grab.root) != focus.surface() {
+                if (grab.has_keyboard_grab || grab.focuses_popup)
+                    && Some(&grab.root) != focus.surface()
+                {
                     trace!(
                         "grab root {:?} is not the new focus {:?}, ungrabbing",
                         grab.root,
@@ -1459,7 +1483,10 @@ impl State {
                     );
 
                     grab.grab.ungrab(PopupUngrabStrategy::All);
-                    keyboard.unset_grab(self);
+                    // Without a popup keyboard grab, the keyboard grab is the IME's: keep it.
+                    if grab.has_keyboard_grab {
+                        keyboard.unset_grab(self);
+                    }
                     self.niri.seat.get_pointer().unwrap().unset_grab(
                         self,
                         SERIAL_COUNTER.next_serial(),
