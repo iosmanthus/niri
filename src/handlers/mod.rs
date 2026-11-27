@@ -57,7 +57,7 @@ use smithay::wayland::selection::primary_selection::{
 use smithay::wayland::selection::wlr_data_control::{
     DataControlHandler as WlrDataControlHandler, DataControlState as WlrDataControlState,
 };
-use smithay::wayland::selection::{SelectionHandler, SelectionTarget};
+use smithay::wayland::selection::{SelectionHandler, SelectionRead, SelectionTarget};
 use smithay::wayland::session_lock::{
     LockSurface, SessionLockHandler, SessionLockManagerState, SessionLocker,
 };
@@ -316,6 +316,17 @@ impl SelectionHandler for State {
                 warn!("error writing selection: {err:?}");
             }
         });
+    }
+
+    fn receive_selection(
+        &mut self,
+        read: SelectionRead<Self::SelectionUserData>,
+        fd: OwnedFd,
+        seat: Seat<Self>,
+    ) {
+        if let Some(fd) = self.niri.file_reference_broker.take(&read, fd) {
+            read.forward(self, fd, seat);
+        }
     }
 }
 

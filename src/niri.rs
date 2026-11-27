@@ -1,7 +1,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -126,6 +126,7 @@ use crate::a11y::A11y;
 use crate::animation::Clock;
 use crate::backend::tty::SurfaceDmabufFeedback;
 use crate::backend::{Backend, Headless, RenderResult, Tty, Winit};
+use crate::clipboard_broker::FileReferenceBroker;
 use crate::cursor::{CursorManager, CursorTextureCache, RenderCursor, XCursor};
 #[cfg(feature = "dbus")]
 use crate::dbus::freedesktop_locale1::Locale1ToNiri;
@@ -439,6 +440,9 @@ pub struct Niri {
 
     pub ipc_server: Option<IpcServer>,
     pub ipc_outputs_changed: bool,
+
+    /// Where reads of file references that cross a sandbox boundary go.
+    pub file_reference_broker: FileReferenceBroker,
 
     pub satellite: Option<Satellite>,
 
@@ -1785,6 +1789,11 @@ impl State {
             old_config.outputs = outputs;
         }
 
+        let file_reference_broker = old_config.clipboard.file_reference_broker.clone();
+        self.niri
+            .file_reference_broker
+            .set_path(file_reference_broker.as_deref());
+
         // Release the borrow.
         drop(old_config);
 
@@ -2682,6 +2691,9 @@ impl Niri {
             )
             .unwrap();
 
+        let mut file_reference_broker = FileReferenceBroker::default();
+        file_reference_broker.set_path(config_.clipboard.file_reference_broker.as_deref());
+
         drop(config_);
         let mut niri = Self {
             config,
@@ -2830,6 +2842,7 @@ impl Niri {
 
             ipc_server,
             ipc_outputs_changed: false,
+            file_reference_broker,
 
             satellite: None,
 
@@ -2876,6 +2889,13 @@ impl Niri {
             security_context,
         } = client;
 
+        // The socket of a client with unknown credentials is niri's own.
+        let peer_pidfd = if credentials_unknown {
+            None
+        } else {
+            peer_pidfd(&client)
+        };
+
         let config = self.config.borrow();
         let can_use_layer_shell = !restricted
             || security_context_app.as_ref().is_some_and(|app| {
@@ -2894,6 +2914,7 @@ impl Niri {
             security_context_app,
             can_use_layer_shell,
             security_context,
+            peer_pidfd,
         });
 
         if let Err(err) = self.display_handle.insert_client(client, data) {
@@ -7333,6 +7354,36 @@ pub struct SecurityContextInfo {
     pub instance_id: Option<String>,
 }
 
+/// A pidfd of the process at the other end of `socket` (`SO_PEERPIDFD`, Linux 6.5).
+#[cfg(target_os = "linux")]
+fn peer_pidfd(socket: &UnixStream) -> Option<OwnedFd> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+
+    let mut fd: libc::c_int = -1;
+    let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+    // SAFETY: the option writes one int into `fd`, whose size `len` gives.
+    let ret = unsafe {
+        libc::getsockopt(
+            socket.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERPIDFD,
+            (&raw mut fd).cast(),
+            &mut len,
+        )
+    };
+    if ret != 0 || fd < 0 {
+        debug!("no peer pidfd: {}", std::io::Error::last_os_error());
+        return None;
+    }
+    // SAFETY: the kernel gave us this new fd.
+    Some(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn peer_pidfd(_socket: &UnixStream) -> Option<OwnedFd> {
+    None
+}
+
 impl SecurityContextInfo {
     pub fn new(
         sandbox_engine: Option<&str>,
@@ -7377,6 +7428,8 @@ pub struct ClientState {
     pub can_use_layer_shell: bool,
     /// The security context the client connected through, if any (restricted clients).
     pub security_context: Option<SecurityContextInfo>,
+    /// A pidfd of the client's process, taken when it connected (`SO_PEERPIDFD`), if known.
+    pub peer_pidfd: Option<OwnedFd>,
 }
 
 /// Whose layer surfaces: the host's, or a sandboxed app's (a restricted client that

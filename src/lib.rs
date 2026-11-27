@@ -6,6 +6,7 @@ pub mod a11y;
 pub mod animation;
 pub mod backend;
 pub mod cli;
+pub mod clipboard_broker;
 pub mod cursor;
 #[cfg(feature = "dbus")]
 pub mod dbus;

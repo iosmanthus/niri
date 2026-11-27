@@ -2,6 +2,7 @@ use std::cmp::min;
 use std::collections::HashMap;
 use std::fmt;
 use std::fmt::Write as _;
+use std::os::fd::{AsFd as _, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -9,6 +10,11 @@ use std::time::Duration;
 
 use calloop::EventLoop;
 use calloop_wayland_source::WaylandSource;
+use smithay::reexports::wayland_protocols::ext::data_control::v1::client::{
+    ext_data_control_device_v1::{self, ExtDataControlDeviceV1},
+    ext_data_control_manager_v1::ExtDataControlManagerV1,
+    ext_data_control_offer_v1::ExtDataControlOfferV1,
+};
 use single_pixel_buffer::v1::client::wp_single_pixel_buffer_manager_v1::WpSinglePixelBufferManagerV1;
 use smithay::reexports::wayland_protocols::wp::keyboard_shortcuts_inhibit::zv1::client::zwp_keyboard_shortcuts_inhibit_manager_v1::ZwpKeyboardShortcutsInhibitManagerV1;
 use smithay::reexports::wayland_protocols::wp::keyboard_shortcuts_inhibit::zv1::client::zwp_keyboard_shortcuts_inhibitor_v1::{self, ZwpKeyboardShortcutsInhibitorV1};
@@ -42,6 +48,10 @@ use wayland_client::globals::Global;
 use wayland_client::protocol::wl_buffer::{self, WlBuffer};
 use wayland_client::protocol::wl_callback::{self, WlCallback};
 use wayland_client::protocol::wl_compositor::WlCompositor;
+use wayland_client::protocol::wl_data_device::{self, WlDataDevice};
+use wayland_client::protocol::wl_data_device_manager::WlDataDeviceManager;
+use wayland_client::protocol::wl_data_offer::WlDataOffer;
+use wayland_client::protocol::wl_data_source::{self, WlDataSource};
 use wayland_client::protocol::wl_display::WlDisplay;
 use wayland_client::protocol::wl_keyboard::{self, WlKeyboard};
 use wayland_client::protocol::wl_output::{self, WlOutput};
@@ -77,6 +87,8 @@ pub struct State {
     pub spbm: Option<WpSinglePixelBufferManagerV1>,
     pub viewporter: Option<WpViewporter>,
     pub ksim: Option<ZwpKeyboardShortcutsInhibitManagerV1>,
+    pub data_device_manager: Option<WlDataDeviceManager>,
+    pub data_control_manager: Option<ExtDataControlManagerV1>,
     pub pointer_constraints: Option<ZwpPointerConstraintsV1>,
     pub lock_manager: Option<ExtSessionLockManagerV1>,
     pub lock_events: Vec<(ExtSessionLockV1, LockEvent)>,
@@ -86,6 +98,20 @@ pub struct State {
     pub layers: Vec<LayerSurface>,
     pub popups: Vec<Popup>,
     pub input_method_grabs: Vec<(ZwpInputMethodV2, ZwpInputMethodKeyboardGrabV2)>,
+    pub clipboard: Clipboard,
+}
+
+/// The clipboard of a test client.
+#[derive(Debug, Default)]
+pub struct Clipboard {
+    pub data_device: Option<WlDataDevice>,
+    pub data_control_device: Option<ExtDataControlDeviceV1>,
+    /// The last selection that the data device offered.
+    pub offer: Option<WlDataOffer>,
+    /// The last selection that the data-control device offered.
+    pub control_offer: Option<ExtDataControlOfferV1>,
+    /// Requests of the client's data sources to write their data.
+    pub sends: Vec<(String, OwnedFd)>,
 }
 
 pub struct Popup {
@@ -325,6 +351,8 @@ impl Client {
             spbm: None,
             viewporter: None,
             ksim: None,
+            data_device_manager: None,
+            data_control_manager: None,
             pointer_constraints: None,
             lock_manager: None,
             lock_events: Vec::new(),
@@ -333,6 +361,7 @@ impl Client {
             layers: Vec::new(),
             popups: Vec::new(),
             input_method_grabs: Vec::new(),
+            clipboard: Clipboard::default(),
         };
 
         Self {
@@ -395,6 +424,61 @@ impl Client {
 }
 
 impl State {
+    fn seat(&self) -> &WlSeat {
+        self.seats.keys().next().unwrap()
+    }
+
+    /// The client's data device (created on first use): it gets the clipboard of the focused
+    /// client.
+    pub fn data_device(&mut self) -> WlDataDevice {
+        if self.clipboard.data_device.is_none() {
+            let manager = self.data_device_manager.as_ref().unwrap();
+            let device = manager.get_data_device(self.seat(), &self.qh, ());
+            self.clipboard.data_device = Some(device);
+        }
+        self.clipboard.data_device.clone().unwrap()
+    }
+
+    /// The client's data-control device (created on first use): it gets the clipboard without
+    /// focus, as clipboard managers do.
+    pub fn data_control_device(&mut self) -> ExtDataControlDeviceV1 {
+        if self.clipboard.data_control_device.is_none() {
+            let manager = self.data_control_manager.as_ref().unwrap();
+            let device = manager.get_data_device(self.seat(), &self.qh, ());
+            self.clipboard.data_control_device = Some(device);
+        }
+        self.clipboard.data_control_device.clone().unwrap()
+    }
+
+    /// Sets the clipboard through the data device, offering `mime_types`. The client needs the
+    /// keyboard focus.
+    pub fn set_clipboard(&mut self, mime_types: &[&str]) -> WlDataSource {
+        let device = self.data_device();
+        let manager = self.data_device_manager.as_ref().unwrap();
+        let source = manager.create_data_source(&self.qh, ());
+        for mime_type in mime_types {
+            source.offer(mime_type.to_string());
+        }
+        device.set_selection(Some(&source), 0);
+        source
+    }
+
+    /// Reads `mime_type` from the clipboard that the data device offered, into `fd`.
+    pub fn receive_clipboard(&self, mime_type: &str, fd: OwnedFd) {
+        let offer = self.clipboard.offer.as_ref().expect("no clipboard offer");
+        offer.receive(mime_type.to_owned(), fd.as_fd());
+    }
+
+    /// Reads `mime_type` from the clipboard that the data-control device offered, into `fd`.
+    pub fn receive_clipboard_by_data_control(&self, mime_type: &str, fd: OwnedFd) {
+        let offer = self
+            .clipboard
+            .control_offer
+            .as_ref()
+            .expect("no clipboard offer");
+        offer.receive(mime_type.to_owned(), fd.as_fd());
+    }
+
     pub fn create_surface(&mut self) -> WlSurface {
         let compositor = self.compositor.as_ref().unwrap();
         let surface = compositor.create_surface(&self.qh, ());
@@ -807,6 +891,12 @@ impl Dispatch<WlRegistry, ()> for State {
                     state
                         .seats
                         .insert(registry.bind(name, version, qh, ()), Seat::default());
+                } else if interface == WlDataDeviceManager::interface().name {
+                    let version = min(version, WlDataDeviceManager::interface().version);
+                    state.data_device_manager = Some(registry.bind(name, version, qh, ()));
+                } else if interface == ExtDataControlManagerV1::interface().name {
+                    let version = min(version, ExtDataControlManagerV1::interface().version);
+                    state.data_control_manager = Some(registry.bind(name, version, qh, ()));
                 } else if interface == ZwpKeyboardShortcutsInhibitManagerV1::interface().name {
                     let version = min(
                         version,
@@ -1333,3 +1423,82 @@ impl Dispatch<ZwpInputMethodKeyboardGrabV2, ()> for State {
     ) {
     }
 }
+
+impl Dispatch<WlDataDevice, ()> for State {
+    fn event(
+        state: &mut Self,
+        _device: &WlDataDevice,
+        event: <WlDataDevice as wayland_client::Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        if let wl_data_device::Event::Selection { id } = event {
+            state.clipboard.offer = id;
+        }
+    }
+
+    wayland_client::event_created_child!(State, WlDataDevice, [
+        wl_data_device::EVT_DATA_OFFER_OPCODE => (WlDataOffer, ()),
+    ]);
+}
+
+impl Dispatch<WlDataSource, ()> for State {
+    fn event(
+        state: &mut Self,
+        _source: &WlDataSource,
+        event: <WlDataSource as wayland_client::Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        if let wl_data_source::Event::Send { mime_type, fd } = event {
+            state.clipboard.sends.push((mime_type, fd));
+        }
+    }
+}
+
+impl Dispatch<ExtDataControlDeviceV1, ()> for State {
+    fn event(
+        state: &mut Self,
+        _device: &ExtDataControlDeviceV1,
+        event: <ExtDataControlDeviceV1 as wayland_client::Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        if let ext_data_control_device_v1::Event::Selection { id } = event {
+            state.clipboard.control_offer = id;
+        }
+    }
+
+    wayland_client::event_created_child!(State, ExtDataControlDeviceV1, [
+        ext_data_control_device_v1::EVT_DATA_OFFER_OPCODE => (ExtDataControlOfferV1, ()),
+    ]);
+}
+
+/// Objects whose events the tests ignore.
+macro_rules! ignore_events {
+    ($($proxy:ty),* $(,)?) => {
+        $(
+            impl Dispatch<$proxy, ()> for State {
+                fn event(
+                    _: &mut Self,
+                    _: &$proxy,
+                    _: <$proxy as wayland_client::Proxy>::Event,
+                    _: &(),
+                    _: &Connection,
+                    _: &QueueHandle<Self>,
+                ) {
+                }
+            }
+        )*
+    };
+}
+
+ignore_events!(
+    WlDataDeviceManager,
+    WlDataOffer,
+    ExtDataControlManagerV1,
+    ExtDataControlOfferV1,
+);
