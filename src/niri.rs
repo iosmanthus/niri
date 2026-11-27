@@ -2640,6 +2640,7 @@ impl Niri {
                         restricted: false,
                         credentials_unknown: false,
                         security_context_app: None,
+                        security_context: None,
                     });
                 })
                 .unwrap();
@@ -2872,6 +2873,7 @@ impl Niri {
             restricted,
             credentials_unknown,
             security_context_app,
+            security_context,
         } = client;
 
         let config = self.config.borrow();
@@ -2891,6 +2893,7 @@ impl Niri {
             connection_id: self.next_connection_id,
             security_context_app,
             can_use_layer_shell,
+            security_context,
         });
 
         if let Err(err) = self.display_handle.insert_client(client, data) {
@@ -7305,6 +7308,8 @@ pub struct NewClient {
     pub credentials_unknown: bool,
     /// The app that the security context the client connected through names, if any.
     pub security_context_app: Option<SecurityContextApp>,
+    /// The security context the client connected through, if any.
+    pub security_context: Option<SecurityContextInfo>,
 }
 
 /// The app a security context names: its sandbox engine and the app id, which is the
@@ -7315,6 +7320,42 @@ pub struct NewClient {
 pub struct SecurityContextApp {
     pub engine: Option<String>,
     pub app_id: String,
+}
+
+/// What a security context (wp-security-context-v1) says about the clients that connect through
+/// it. The creator of the context sets it, for example Flatpak: the sandbox engine
+/// `org.flatpak`, the Flatpak app ID and the instance ID; a client inside the context cannot
+/// change it. Empty strings are taken as unset.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SecurityContextInfo {
+    pub sandbox_engine: Option<String>,
+    pub app_id: Option<String>,
+    pub instance_id: Option<String>,
+}
+
+impl SecurityContextInfo {
+    pub fn new(
+        sandbox_engine: Option<&str>,
+        app_id: Option<&str>,
+        instance_id: Option<&str>,
+    ) -> Self {
+        let set = |value: Option<&str>| value.filter(|value| !value.is_empty()).map(String::from);
+        Self {
+            sandbox_engine: set(sandbox_engine),
+            app_id: set(app_id),
+            instance_id: set(instance_id),
+        }
+    }
+}
+
+impl From<&smithay::wayland::security_context::SecurityContext> for SecurityContextInfo {
+    fn from(context: &smithay::wayland::security_context::SecurityContext) -> Self {
+        Self::new(
+            context.sandbox_engine.as_deref(),
+            context.app_id.as_deref(),
+            context.instance_id.as_deref(),
+        )
+    }
 }
 
 pub struct ClientState {
@@ -7334,6 +7375,8 @@ pub struct ClientState {
     /// of a sandboxed app that the config names in `sandbox-layer-shell`. Decided when the
     /// client connects.
     pub can_use_layer_shell: bool,
+    /// The security context the client connected through, if any (restricted clients).
+    pub security_context: Option<SecurityContextInfo>,
 }
 
 /// Whose layer surfaces: the host's, or a sandboxed app's (a restricted client that

@@ -10,7 +10,7 @@ use smithay::output::Output;
 
 use super::client::{Client, ClientId};
 use super::server::Server;
-use crate::niri::{NewClient, Niri, SecurityContextApp};
+use crate::niri::{NewClient, Niri, SecurityContextApp, SecurityContextInfo};
 
 pub struct Fixture {
     pub event_loop: EventLoop<'static, State>,
@@ -98,11 +98,11 @@ impl Fixture {
     }
 
     pub fn add_client(&mut self) -> ClientId {
-        self.add_client_with(false, None, None)
+        self.add_client_with(false, None, None, None)
     }
 
     pub fn add_client_with_peer(&mut self, peer: Option<crate::selinux::PeerLabel>) -> ClientId {
-        self.add_client_with(false, None, peer)
+        self.add_client_with(false, None, None, peer)
     }
 
     /// A client that connected through a security context of sandbox engine `engine`
@@ -112,13 +112,24 @@ impl Fixture {
             engine: engine.map(str::to_owned),
             app_id: app_id.to_owned(),
         };
-        self.add_client_with(true, Some(app), None)
+        let context = SecurityContextInfo::new(engine, Some(app_id), None);
+        self.add_client_with(true, Some(app), Some(context), None)
+    }
+
+    /// A restricted client that connected through a security context with `context`.
+    pub fn add_client_in_security_context(&mut self, context: SecurityContextInfo) -> ClientId {
+        let app = context.app_id.clone().map(|app_id| SecurityContextApp {
+            engine: context.sandbox_engine.clone(),
+            app_id,
+        });
+        self.add_client_with(true, app, Some(context), None)
     }
 
     fn add_client_with(
         &mut self,
         restricted: bool,
         security_context_app: Option<SecurityContextApp>,
+        security_context: Option<SecurityContextInfo>,
         peer: Option<crate::selinux::PeerLabel>,
     ) -> ClientId {
         let (sock1, sock2) = UnixStream::pair().unwrap();
@@ -127,6 +138,7 @@ impl Fixture {
             restricted,
             credentials_unknown: false,
             security_context_app,
+            security_context,
         };
         if let Some(peer) = peer {
             self.niri().insert_test_client(client, peer);
