@@ -97,7 +97,7 @@ use smithay::wayland::pointer_constraints::{with_pointer_constraint, PointerCons
 use smithay::wayland::pointer_gestures::PointerGesturesState;
 use smithay::wayland::presentation::PresentationState;
 use smithay::wayland::relative_pointer::RelativePointerManagerState;
-use smithay::wayland::security_context::SecurityContextState;
+use smithay::wayland::security_context::{SecurityContext, SecurityContextState};
 use smithay::wayland::selection::data_device::{set_data_device_selection, DataDeviceState};
 use smithay::wayland::selection::ext_data_control::DataControlState as ExtDataControlState;
 use smithay::wayland::selection::primary_selection::PrimarySelectionState;
@@ -2846,6 +2846,7 @@ impl Niri {
                         client,
                         restricted: false,
                         credentials_unknown: false,
+                        security_context: None,
                     });
                 })
                 .unwrap();
@@ -3066,6 +3067,7 @@ impl Niri {
             client,
             restricted,
             credentials_unknown,
+            security_context,
         } = client;
 
         let config = self.config.borrow();
@@ -3075,6 +3077,7 @@ impl Niri {
             primary_selection_disabled: config.clipboard.disable_primary,
             restricted,
             credentials_unknown,
+            security_context,
         });
 
         if let Err(err) = self.display_handle.insert_client(client, data) {
@@ -7781,6 +7784,44 @@ pub struct NewClient {
     pub client: UnixStream,
     pub restricted: bool,
     pub credentials_unknown: bool,
+    /// The security context the client connected through, if any.
+    pub security_context: Option<SecurityContextInfo>,
+}
+
+/// What a security context (wp-security-context-v1) says about the clients that connect through
+/// it. The creator of the context sets it, for example Flatpak: the sandbox engine
+/// `org.flatpak`, the Flatpak app ID and the instance ID; a client inside the context cannot
+/// change it. Empty strings are taken as unset.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SecurityContextInfo {
+    pub sandbox_engine: Option<String>,
+    pub app_id: Option<String>,
+    pub instance_id: Option<String>,
+}
+
+impl SecurityContextInfo {
+    pub fn new(
+        sandbox_engine: Option<&str>,
+        app_id: Option<&str>,
+        instance_id: Option<&str>,
+    ) -> Self {
+        let set = |value: Option<&str>| value.filter(|value| !value.is_empty()).map(String::from);
+        Self {
+            sandbox_engine: set(sandbox_engine),
+            app_id: set(app_id),
+            instance_id: set(instance_id),
+        }
+    }
+}
+
+impl From<&SecurityContext> for SecurityContextInfo {
+    fn from(context: &SecurityContext) -> Self {
+        Self::new(
+            context.sandbox_engine.as_deref(),
+            context.app_id.as_deref(),
+            context.instance_id.as_deref(),
+        )
+    }
 }
 
 pub struct ClientState {
@@ -7791,6 +7832,8 @@ pub struct ClientState {
     pub restricted: bool,
     /// We cannot retrieve this client's socket credentials.
     pub credentials_unknown: bool,
+    /// The security context the client connected through, if any (restricted clients).
+    pub security_context: Option<SecurityContextInfo>,
 }
 
 impl ClientData for ClientState {

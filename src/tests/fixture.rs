@@ -10,7 +10,7 @@ use smithay::output::Output;
 
 use super::client::{Client, ClientId};
 use super::server::Server;
-use crate::niri::{NewClient, Niri};
+use crate::niri::{NewClient, Niri, SecurityContextInfo};
 
 pub struct Fixture {
     pub event_loop: EventLoop<'static, State>,
@@ -96,11 +96,25 @@ impl Fixture {
     }
 
     pub fn add_client(&mut self) -> ClientId {
+        self.add_client_with(false, None)
+    }
+
+    /// A restricted client that connected through a security context with `context`.
+    pub fn add_client_in_security_context(&mut self, context: SecurityContextInfo) -> ClientId {
+        self.add_client_with(true, Some(context))
+    }
+
+    fn add_client_with(
+        &mut self,
+        restricted: bool,
+        security_context: Option<SecurityContextInfo>,
+    ) -> ClientId {
         let (sock1, sock2) = UnixStream::pair().unwrap();
         self.niri().insert_client(NewClient {
             client: sock1,
-            restricted: false,
+            restricted,
             credentials_unknown: false,
+            security_context,
         });
 
         let client = Client::new(sock2);

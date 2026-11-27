@@ -72,7 +72,7 @@ pub use crate::handlers::xdg_shell::KdeDecorationsModeState;
 use crate::input::click_grab::ClickGrab;
 use crate::layout::workspace::WorkspaceId;
 use crate::layout::{ActivateWindow, LayoutElement};
-use crate::niri::{DndIcon, NewClient, State};
+use crate::niri::{DndIcon, NewClient, SecurityContextInfo, State};
 use crate::protocols::ext_workspace::{self, ExtWorkspaceHandler, ExtWorkspaceManagerState};
 use crate::protocols::foreign_toplevel::{
     self, ForeignToplevelHandler, ForeignToplevelManagerState,
@@ -506,6 +506,7 @@ impl SecurityContextHandler for State {
                     client,
                     restricted: true,
                     credentials_unknown: false,
+                    security_context: Some(SecurityContextInfo::from(&context)),
                 });
             })
             .unwrap();
