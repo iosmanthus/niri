@@ -101,20 +101,25 @@ impl MergeWith<ConfigNotificationPart> for ConfigNotification {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Clipboard {
     pub disable_primary: bool,
+    /// Unix socket of a broker for file references that cross a sandbox boundary.
+    pub file_reference_broker: Option<String>,
 }
 
-#[derive(knuffel::Decode, Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(knuffel::Decode, Debug, Default, Clone, PartialEq, Eq)]
 pub struct ClipboardPart {
     #[knuffel(child)]
     pub disable_primary: Option<Flag>,
+    #[knuffel(child, unwrap(argument))]
+    pub file_reference_broker: Option<String>,
 }
 
 impl MergeWith<ClipboardPart> for Clipboard {
     fn merge_with(&mut self, part: &ClipboardPart) {
         merge!((self, part), disable_primary);
+        merge_clone_opt!((self, part), file_reference_broker);
     }
 }
 

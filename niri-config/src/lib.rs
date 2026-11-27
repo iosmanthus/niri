@@ -1328,6 +1328,7 @@ mod tests {
 
             clipboard {
                 disable-primary
+                file-reference-broker "/run/user/1000/broker"
             }
 
             hotkey-overlay {
@@ -2015,6 +2016,9 @@ mod tests {
             ),
             clipboard: Clipboard {
                 disable_primary: true,
+                file_reference_broker: Some(
+                    "/run/user/1000/broker",
+                ),
             },
             hotkey_overlay: HotkeyOverlay {
                 skip_at_startup: true,

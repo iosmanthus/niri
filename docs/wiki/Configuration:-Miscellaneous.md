@@ -285,6 +285,20 @@ clipboard {
 }
 ```
 
+<sup>Since: next release</sup> `file-reference-broker` names the Unix socket of a broker for file references that cross a sandbox boundary (optional, no broker by default); a relative path is in `$XDG_RUNTIME_DIR`.
+Sandboxed apps (clients of a security context, such as Flatpak apps) copy files as paths that only exist inside their sandbox.
+When such a list (`text/uri-list` or `x-special/gnome-copied-files`) crosses a sandbox boundary (a client reads it from a client of another sandbox, a sandboxed client reads it from a host client, or a host client reads it from a sandboxed client), niri passes the read to the broker instead of the source.
+Clients of security contexts without an instance ID count as separate sandboxes.
+The broker gets a `SOCK_SEQPACKET` message with a JSON header (format version, selection, device, mime type, the selection's generation, and the security contexts of source and reader, `null` for host clients) and file descriptors (the read end of the source's pipe, the reader's fd, and the pidfds of source and reader when known; pidfds need Linux 6.5).
+The broker can make the files available to the reader, for example through the document portal, and write the rewritten list.
+When the broker cannot be reached or is busy, the reader gets no data.
+
+```kdl
+clipboard {
+    file-reference-broker "sandbox-permd/socket"
+}
+```
+
 ### `hotkey-overlay`
 
 Settings for the "Important Hotkeys" overlay.
